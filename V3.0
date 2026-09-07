@@ -1,0 +1,3343 @@
+<!DOCTYPE html>
+<html lang="th" class="h-full bg-zinc-950">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>US Stock Terminal v3.0 Pro - Weekly Picks (10 Strong Bullish) & Multi-Portfolio</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/prop-types@15.8.1/prop-types.min.js"></script>
+  <script src="https://unpkg.com/recharts@2.12.7/umd/Recharts.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body class="h-full bg-zinc-950 text-zinc-100">
+  <div id="root" class="h-full"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useMemo, useCallback, useRef, useDeferredValue } = React;
+    const {
+      ComposedChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
+      ResponsiveContainer, ReferenceLine
+    } = Recharts;
+
+    /* ============================================================
+       STOCK DICTIONARY & LOGO UTILITIES
+       ============================================================ */
+    const STOCK_INFO_MAP = {
+      NVDA: { name: "NVIDIA Corporation", domain: "nvidia.com" },
+      AAPL: { name: "Apple Inc.", domain: "apple.com" },
+      TSLA: { name: "Tesla, Inc.", domain: "tesla.com" },
+      PLTR: { name: "Palantir Technologies Inc.", domain: "palantir.com" },
+      RKLB: { name: "Rocket Lab USA, Inc.", domain: "rocketlabusa.com" },
+      MSFT: { name: "Microsoft Corporation", domain: "microsoft.com" },
+      AMZN: { name: "Amazon.com, Inc.", domain: "amazon.com" },
+      GOOGL: { name: "Alphabet Inc. (Class A)", domain: "abc.xyz" },
+      GOOG: { name: "Alphabet Inc. (Class C)", domain: "abc.xyz" },
+      META: { name: "Meta Platforms, Inc.", domain: "meta.com" },
+      AMD: { name: "Advanced Micro Devices", domain: "amd.com" },
+      INTC: { name: "Intel Corporation", domain: "intel.com" },
+      NFLX: { name: "Netflix, Inc.", domain: "netflix.com" },
+      AVGO: { name: "Broadcom Inc.", domain: "broadcom.com" },
+      SMCI: { name: "Super Micro Computer", domain: "supermicro.com" },
+      ARM: { name: "Arm Holdings plc", domain: "arm.com" },
+      TSM: { name: "Taiwan Semiconductor (TSMC)", domain: "tsmc.com" },
+      ASML: { name: "ASML Holding N.V.", domain: "asml.com" },
+      COIN: { name: "Coinbase Global, Inc.", domain: "coinbase.com" },
+      HOOD: { name: "Robinhood Markets", domain: "robinhood.com" },
+      MSTR: { name: "MicroStrategy Inc.", domain: "microstrategy.com" },
+      PANW: { name: "Palo Alto Networks", domain: "paloaltonetworks.com" },
+      CRWD: { name: "CrowdStrike Holdings", domain: "crowdstrike.com" },
+      NET: { name: "Cloudflare, Inc.", domain: "cloudflare.com" },
+      SNOW: { name: "Snowflake Inc.", domain: "snowflake.com" },
+      UBER: { name: "Uber Technologies", domain: "uber.com" },
+      ABNB: { name: "Airbnb, Inc.", domain: "airbnb.com" },
+      DIS: { name: "The Walt Disney Company", domain: "thewaltdisneycompany.com" },
+      SPY: { name: "SPDR S&P 500 ETF Trust", domain: "ssga.com" },
+      QQQ: { name: "Invesco QQQ Trust", domain: "invesco.com" },
+      IWM: { name: "iShares Russell 2000 ETF", domain: "ishares.com" },
+      XLK: { name: "Technology Select Sector SPDR", domain: "ssga.com" },
+      XLF: { name: "Financial Select Sector SPDR", domain: "ssga.com" },
+      XLV: { name: "Health Care Select Sector SPDR", domain: "ssga.com" },
+      XLE: { name: "Energy Select Sector SPDR", domain: "ssga.com" },
+      XLY: { name: "Consumer Discretionary SPDR", domain: "ssga.com" },
+      XLP: { name: "Consumer Staples SPDR", domain: "ssga.com" },
+      XLU: { name: "Utilities Select Sector SPDR", domain: "ssga.com" },
+      XLI: { name: "Industrial Select Sector SPDR", domain: "ssga.com" },
+      XLB: { name: "Materials Select Sector SPDR", domain: "ssga.com" },
+      XLRE: { name: "Real Estate Select SPDR", domain: "ssga.com" },
+      XLC: { name: "Communication Services SPDR", domain: "ssga.com" },
+      VRT: { name: "Vertiv Holdings Co", domain: "vertiv.com" },
+      CIEN: { name: "Ciena Corporation", domain: "ciena.com" },
+      AXON: { name: "Axon Enterprise, Inc.", domain: "axon.com" },
+      RBRK: { name: "Rubrik, Inc.", domain: "rubrik.com" },
+      CELH: { name: "Celsius Holdings, Inc.", domain: "celsiusholdingsinc.com" },
+      ACHR: { name: "Archer Aviation Inc.", domain: "archer.com" },
+      JOBY: { name: "Joby Aviation, Inc.", domain: "jobyaviation.com" },
+      ONDS: { name: "Ondas Holdings Inc.", domain: "ondas.com" },
+      IONQ: { name: "IonQ, Inc.", domain: "ionq.com" },
+      SHOP: { name: "Shopify Inc. (Canada)", domain: "shopify.com" },
+      CNQ: { name: "Canadian Natural Resources", domain: "cnrl.com" },
+      NVO: { name: "Novo Nordisk A/S (Denmark)", domain: "novonordisk.com" },
+      SAP: { name: "SAP SE (Germany)", domain: "sap.com" },
+      SHEL: { name: "Shell plc (UK)", domain: "shell.com" },
+      AZN: { name: "AstraZeneca plc (UK)", domain: "astrazeneca.com" },
+      DEO: { name: "Diageo plc (UK)", domain: "diageo.com" },
+      BUD: { name: "Anheuser-Busch InBev (Belgium)", domain: "ab-inbev.com" },
+      SNY: { name: "Sanofi (France)", domain: "sanofi.com" },
+      TTE: { name: "TotalEnergies SE (France)", domain: "totalenergies.com" },
+      ERIC: { name: "Telefonaktiebolaget LM Ericsson (Sweden)", domain: "ericsson.com" },
+      NOK: { name: "Nokia Corporation (Finland)", domain: "nokia.com" },
+      BABA: { name: "Alibaba Group (China)", domain: "alibaba.com" },
+      PDD: { name: "PDD Holdings Inc. (China)", domain: "pinduoduo.com" },
+      JD: { name: "JD.com, Inc. (China)", domain: "jd.com" },
+      NTES: { name: "NetEase, Inc. (China)", domain: "netease.com" },
+      TM: { name: "Toyota Motor Corporation (Japan)", domain: "toyota.com" },
+      SONY: { name: "Sony Group Corporation (Japan)", domain: "sony.com" },
+      HMC: { name: "Honda Motor Co., Ltd. (Japan)", domain: "honda.com" },
+      INFY: { name: "Infosys Limited (India)", domain: "infosys.com" },
+      WIT: { name: "Wipro Limited (India)", domain: "wipro.com" },
+      HDB: { name: "HDFC Bank Limited (India)", domain: "hdfcbank.com" },
+      CPNG: { name: "Coupang, Inc. (South Korea)", domain: "coupang.com" },
+      GRAB: { name: "Grab Holdings Limited (Singapore)", domain: "grab.com" },
+      SE: { name: "Sea Limited (Singapore)", domain: "sea.com" },
+      BHP: { name: "BHP Group Limited (Australia)", domain: "bhp.com" },
+      RIO: { name: "Rio Tinto Group (Australia/UK)", domain: "riotinto.com" },
+      MELI: { name: "MercadoLibre, Inc. (Argentina)", domain: "mercadolibre.com" },
+      VALE: { name: "Vale S.A. (Brazil)", domain: "vale.com" },
+      PBR: { name: "Petróleo Brasileiro S.A. - Petrobras", domain: "petrobras.com.br" },
+      ITUB: { name: "Itaú Unibanco Holding S.A. (Brazil)", domain: "itau.com.br" },
+      MU: { name: "Micron Technology, Inc.", domain: "micron.com" },
+      APP: { name: "AppLovin Corporation", domain: "applovin.com" },
+      SOFI: { name: "SoFi Technologies, Inc.", domain: "sofi.com" },
+      UPST: { name: "Upstart Holdings, Inc.", domain: "upstart.com" },
+      AFRM: { name: "Affirm Holdings, Inc.", domain: "affirm.com" },
+      DKNG: { name: "DraftKings Inc.", domain: "draftkings.com" },
+      RBLX: { name: "Roblox Corporation", domain: "roblox.com" },
+      U: { name: "Unity Software Inc.", domain: "unity.com" },
+      PATH: { name: "UiPath Inc.", domain: "uipath.com" },
+      S: { name: "SentinelOne, Inc.", domain: "sentinelone.com" },
+      ZS: { name: "Zscaler, Inc.", domain: "zscaler.com" },
+      MDB: { name: "MongoDB, Inc.", domain: "mongodb.com" },
+      HIMS: { name: "Hims & Hers Health, Inc.", domain: "hims.com" },
+      TOST: { name: "Toast, Inc.", domain: "toasttab.com" },
+      CVNA: { name: "Carvana Co.", domain: "carvana.com" },
+      DUOL: { name: "Duolingo, Inc.", domain: "duolingo.com" },
+      APLD: { name: "Applied Digital Corporation", domain: "applieddigital.com" },
+      IREN: { name: "IREN Limited", domain: "iren.com" },
+      CRDO: { name: "Credo Technology Group Holding Ltd", domain: "credosemi.com" },
+      ALAB: { name: "Astera Labs, Inc.", domain: "asteralabs.com" },
+      FTNT: { name: "Fortinet, Inc.", domain: "fortinet.com" },
+      OKTA: { name: "Okta, Inc.", domain: "okta.com" },
+      TTD: { name: "The Trade Desk, Inc.", domain: "thetradedesk.com" },
+      RIVN: { name: "Rivian Automotive, Inc.", domain: "rivian.com" },
+      LCID: { name: "Lucid Group, Inc.", domain: "lucidmotors.com" },
+      FSLR: { name: "First Solar, Inc.", domain: "firstsolar.com" },
+      ENPH: { name: "Enphase Energy, Inc.", domain: "enphase.com" },
+      CEG: { name: "Constellation Energy Corporation", domain: "constellationenergy.com" },
+      VST: { name: "Vistra Corp.", domain: "vistracorp.com" },
+      OKLO: { name: "Oklo Inc.", domain: "oklo.com" },
+      UEC: { name: "Uranium Energy Corp.", domain: "uraniumenergy.com" },
+      MP: { name: "MP Materials Corp.", domain: "mpmaterials.com" },
+      FCX: { name: "Freeport-McMoRan Inc.", domain: "fcx.com" },
+      KTOS: { name: "Kratos Defense & Security Solutions", domain: "kratosdefense.com" },
+      ANET: { name: "Arista Networks, Inc.", domain: "arista.com" },
+      COHR: { name: "Coherent Corp.", domain: "coherent.com" },
+      MRVL: { name: "Marvell Technology, Inc.", domain: "marvell.com" },
+      CDNS: { name: "Cadence Design Systems, Inc.", domain: "cadence.com" },
+      CCJ: { name: "Cameco Corporation (Canada)", domain: "cameco.com" },
+      BN: { name: "Brookfield Corporation (Canada)", domain: "brookfield.com" },
+      UBS: { name: "UBS Group AG (Switzerland)", domain: "ubs.com" },
+      NVS: { name: "Novartis AG (Switzerland)", domain: "novartis.com" },
+      LOGI: { name: "Logitech International S.A. (Switzerland)", domain: "logitech.com" },
+      SAN: { name: "Banco Santander, S.A. (Spain)", domain: "santander.com" },
+      TEF: { name: "Telefónica, S.A. (Spain)", domain: "telefonica.com" },
+      EQNR: { name: "Equinor ASA (Norway)", domain: "equinor.com" },
+      RYAAY: { name: "Ryanair Holdings plc (Ireland)", domain: "ryanair.com" },
+      ETN: { name: "Eaton Corporation plc (Ireland)", domain: "eaton.com" },
+      RACE: { name: "Ferrari N.V. (Italy)", domain: "ferrari.com" },
+      STLA: { name: "Stellantis N.V. (Italy/Netherlands)", domain: "stellantis.com" },
+      E: { name: "Eni S.p.A. (Italy)", domain: "eni.com" },
+      STM: { name: "STMicroelectronics N.V. (Netherlands)", domain: "st.com" },
+      NBIS: { name: "Nebius Group N.V. (Netherlands)", domain: "nebius.com" },
+      EADSY: { name: "Airbus SE (France)", domain: "airbus.com" },
+      LVMUY: { name: "LVMH Moët Hennessy Louis Vuitton (France)", domain: "lvmh.com" },
+      SIEGY: { name: "Siemens AG (Germany)", domain: "siemens.com" },
+      UL: { name: "Unilever PLC (United Kingdom)", domain: "unilever.com" },
+      BP: { name: "BP p.l.c. (United Kingdom)", domain: "bp.com" },
+      HSBC: { name: "HSBC Holdings plc (United Kingdom)", domain: "hsbc.com" },
+      LI: { name: "Li Auto Inc. (China)", domain: "lixiang.com" },
+      NIO: { name: "NIO Inc. (China)", domain: "nio.com" },
+      XPEV: { name: "XPeng Inc. (China)", domain: "xiaopeng.com" },
+      TCOM: { name: "Trip.com Group Limited (China)", domain: "trip.com" },
+      BILI: { name: "Bilibili Inc. (China)", domain: "bilibili.com" },
+      BIDU: { name: "Baidu, Inc. (China)", domain: "baidu.com" },
+      TME: { name: "Tencent Music Entertainment Group (China)", domain: "tencentmusic.com" },
+      YUMC: { name: "Yum China Holdings, Inc. (China)", domain: "yumchina.com" },
+      BEKE: { name: "KE Holdings Inc. (China)", domain: "ke.com" },
+      FUTU: { name: "Futu Holdings Limited (China)", domain: "futuholdings.com" },
+      UMC: { name: "United Microelectronics Corp. (Taiwan)", domain: "umc.com" },
+      CHT: { name: "Chunghwa Telecom Co., Ltd. (Taiwan)", domain: "cht.com.tw" },
+      KB: { name: "KB Financial Group Inc. (South Korea)", domain: "kbfg.com" },
+      PKX: { name: "POSCO Holdings Inc. (South Korea)", domain: "posco-holdings.com" },
+      SKM: { name: "SK Telecom Co., Ltd. (South Korea)", domain: "sktelecom.com" },
+      IBN: { name: "ICICI Bank Limited (India)", domain: "icicibank.com" },
+      TTM: { name: "Tata Motors Limited (India)", domain: "tatamotors.com" },
+      MMYT: { name: "MakeMyTrip Limited (India)", domain: "makemytrip.com" },
+      WNS: { name: "WNS (Holdings) Limited (India)", domain: "wns.com" },
+      TEAM: { name: "Atlassian Corporation (Australia)", domain: "atlassian.com" },
+      WDS: { name: "Woodside Energy Group Ltd (Australia)", domain: "woodside.com" },
+      NU: { name: "Nu Holdings Ltd. (Brazil)", domain: "nubank.com.br" },
+      STNE: { name: "StoneCo Ltd. (Brazil)", domain: "stone.co" },
+      PAGS: { name: "PagSeguro Digital Ltd. (Brazil)", domain: "pagbank.com.br" },
+      GGB: { name: "Gerdau S.A. (Brazil)", domain: "gerdau.com" },
+      ERJ: { name: "Embraer S.A. (Brazil)", domain: "embraer.com" },
+      XP: { name: "XP Inc. (Brazil)", domain: "xpi.com.br" },
+      AMX: { name: "América Móvil, S.A.B. de C.V. (Mexico)", domain: "americamovil.com" },
+      CX: { name: "CEMEX, S.A.B. de C.V. (Mexico)", domain: "cemex.com" },
+      TV: { name: "Grupo Televisa, S.A.B. (Mexico)", domain: "televisa.com" },
+      SQM: { name: "Sociedad Química y Minera de Chile S.A.", domain: "sqm.com" },
+      EC: { name: "Ecopetrol S.A. (Colombia)", domain: "ecopetrol.com.co" },
+      CIB: { name: "Bancolombia S.A. (Colombia)", domain: "grupobancolombia.com" },
+      GLOB: { name: "Globant S.A. (Argentina)", domain: "globant.com" },
+      YPF: { name: "YPF Sociedad Anónima (Argentina)", domain: "ypf.com" },
+      DESP: { name: "Despegar.com, Corp. (Argentina)", domain: "despegar.com" },
+      CHKP: { name: "Check Point Software Technologies (Israel)", domain: "checkpoint.com" },
+      WIX: { name: "Wix.com Ltd. (Israel)", domain: "wix.com" },
+      NICE: { name: "NICE Ltd. (Israel)", domain: "nice.com" },
+      MNDY: { name: "monday.com Ltd. (Israel)", domain: "monday.com" },
+      CYBR: { name: "CyberArk Software Ltd. (Israel)", domain: "cyberark.com" },
+      FVRR: { name: "Fiverr International Ltd. (Israel)", domain: "fiverr.com" },
+      TEVA: { name: "Teva Pharmaceutical Industries (Israel)", domain: "tevapharm.com" },
+      SBSW: { name: "Sibanye Stillwater Limited (South Africa)", domain: "sibanyestillwater.com" },
+      GFI: { name: "Gold Fields Limited (South Africa)", domain: "goldfields.com" },
+      AU: { name: "AngloGold Ashanti plc (South Africa)", domain: "anglogoldashanti.com" }
+    };
+
+    function getStockName(symbol, profileName) {
+      if (profileName && profileName.trim()) return profileName;
+      if (symbol && STOCK_INFO_MAP[symbol.toUpperCase()]?.name) return STOCK_INFO_MAP[symbol.toUpperCase()].name;
+      return symbol || "";
+    }
+
+    function getLogoUrls(symbol, profileLogo) {
+      const list = [];
+      if (profileLogo) list.push(profileLogo);
+      if (symbol) {
+        const cleanSym = symbol.toUpperCase();
+        list.push(`https://assets.parqet.com/logos/symbol/${cleanSym}`);
+        list.push(`https://images.financialmodelingprep.com/symbol/${cleanSym}.png`);
+        if (STOCK_INFO_MAP[cleanSym]?.domain) {
+          list.push(`https://logo.clearbit.com/${STOCK_INFO_MAP[cleanSym].domain}`);
+        }
+      }
+      return list;
+    }
+
+    const StockLogo = React.memo(function StockLogo({ symbol, logoUrl, size = 24, className = "" }) {
+      const [imgIdx, setImgIdx] = useState(0);
+      const [failed, setFailed] = useState(false);
+
+      const logoUrls = useMemo(() => getLogoUrls(symbol, logoUrl), [symbol, logoUrl]);
+
+      useEffect(() => {
+        setImgIdx(0);
+        setFailed(false);
+      }, [symbol, logoUrl]);
+
+      const handleError = () => {
+        if (imgIdx < logoUrls.length - 1) {
+          setImgIdx((prev) => prev + 1);
+        } else {
+          setFailed(true);
+        }
+      };
+
+      if (failed || !logoUrls[imgIdx]) {
+        const char = symbol ? symbol.charAt(0).toUpperCase() : "?";
+        return (
+          <div
+            style={{ width: `${size}px`, height: `${size}px`, minWidth: `${size}px` }}
+            className={`rounded-full bg-zinc-800 border border-zinc-700 flex items-center justify-center font-mono font-bold text-zinc-300 text-[10px] select-none shrink-0 ${className}`}
+            title={symbol}
+          >
+            {char}
+          </div>
+        );
+      }
+
+      return (
+        <div
+          style={{ width: `${size}px`, height: `${size}px`, minWidth: `${size}px` }}
+          className={`rounded-full overflow-hidden bg-zinc-900 border border-zinc-800 flex items-center justify-center shrink-0 p-0.5 ${className}`}
+        >
+          <img
+            src={logoUrls[imgIdx]}
+            alt={symbol}
+            onError={handleError}
+            className="w-full h-full object-contain rounded-full"
+            loading="lazy"
+          />
+        </div>
+      );
+    });
+
+    /* ============================================================
+       SVG ICONS
+       ============================================================ */
+    const Settings = ({ size = 16, className = "" }) => (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+        <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>
+        <circle cx="12" cy="12" r="3"/>
+      </svg>
+    );
+    const Plus = ({ size = 16, className = "" }) => (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+    );
+    const RefreshCw = ({ size = 16, className = "" }) => (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+    );
+    const ChevronDown = ({ size = 16, className = "" }) => (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><polyline points="6 9 12 15 18 9"/></svg>
+    );
+    const ChevronRight = ({ size = 16, className = "" }) => (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><polyline points="9 18 15 12 9 6"/></svg>
+    );
+    const AlertTriangle = ({ size = 16, className = "" }) => (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+    );
+    const Search = ({ size = 16, className = "" }) => (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    );
+    const Trash2 = ({ size = 16, className = "" }) => (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
+    );
+    const Radar = ({ size = 16, className = "" }) => (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="3"/><line x1="12" y1="3" x2="12" y2="21"/><line x1="3" y1="12" x2="21" y2="12"/></svg>
+    );
+    const PieChart = ({ size = 16, className = "" }) => (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M21.21 15.89A10 10 0 1 1 8 2.83"/><path d="M22 12A10 10 0 0 0 12 2v10z"/></svg>
+    );
+    const Zap = ({ size = 16, className = "" }) => (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+    );
+    const Briefcase = ({ size = 16, className = "" }) => (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>
+    );
+    const MinusCircle = ({ size = 16, className = "" }) => (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><circle cx="12" cy="12" r="10"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
+    );
+    const Download = ({ size = 16, className = "" }) => (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+    );
+    const Upload = ({ size = 16, className = "" }) => (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+    );
+
+    /* ============================================================
+       TIMEFRAMES CONFIGURATION
+       ============================================================ */
+    const TIMEFRAMES = [
+      { id: "1day", label: "1D", name: "1 วัน" },
+      { id: "1week", label: "1W", name: "1 สัปดาห์" }
+    ];
+    const DEFAULT_TIMEFRAME = "1week";
+
+    /* ============================================================
+       DATA SOURCES & QUEUES
+       ============================================================ */
+    const TD_BASE = "https://api.twelvedata.com";
+    const FH_BASE = "https://finnhub.io/api/v1";
+    const DEFAULT_WATCHLIST = ["NVDA", "AAPL", "TSLA", "PLTR", "RKLB"];
+    const MAX_SYMBOLS = 20;
+
+    const SECTOR_ETFS = [
+      { symbol: "XLK", name: "Technology", thName: "เทคโนโลยี" },
+      { symbol: "XLF", name: "Financials", thName: "การเงิน" },
+      { symbol: "XLV", name: "Healthcare", thName: "การแพทย์" },
+      { symbol: "XLE", name: "Energy", thName: "พลังงาน" },
+      { symbol: "XLY", name: "Consumer Discretionary", thName: "สินค้าฟุ่มเฟือย" },
+      { symbol: "XLP", name: "Consumer Staples", thName: "สินค้าจำเป็น" },
+      { symbol: "XLU", name: "Utilities", thName: "สาธารณูปโภค" },
+      { symbol: "XLI", name: "Industrials", thName: "อุตสาหกรรม" },
+      { symbol: "XLB", name: "Materials", thName: "วัสดุศาสตร์" },
+      { symbol: "XLRE", name: "Real Estate", thName: "อสังหาริมทรัพย์" },
+      { symbol: "XLC", name: "Communication Services", thName: "สื่อสาร & สื่อ" }
+    ];
+
+    function createQueue(getMinIntervalMs) {
+      let last = 0;
+      let chain = Promise.resolve();
+      return (fn) => {
+        const run = chain.then(async () => {
+          const minIntervalMs = typeof getMinIntervalMs === "function" ? getMinIntervalMs() : getMinIntervalMs;
+          const wait = Math.max(0, last + minIntervalMs - Date.now());
+          if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+          last = Date.now();
+          return fn();
+        });
+        chain = run.catch(() => {});
+        return run;
+      };
+    }
+
+    let tdMinIntervalMs = 7700;
+    let fhMinIntervalMs = 1100;
+    function setTdRateLimit(callsPerMinute) {
+      const n = Number(callsPerMinute);
+      if (Number.isFinite(n) && n > 0) tdMinIntervalMs = Math.ceil(60000 / n);
+    }
+    const tdQueue = createQueue(() => tdMinIntervalMs);
+    const fhQueue = createQueue(() => fhMinIntervalMs);
+
+    /* ---------------- storage helpers ---------------- */
+    async function loadStore(key, fallback) {
+      try {
+        const val = localStorage.getItem(key);
+        return val ? JSON.parse(val) : fallback;
+      } catch {
+        return fallback;
+      }
+    }
+    async function saveStore(key, value) {
+      try {
+        localStorage.setItem(key, JSON.stringify(value));
+      } catch (e) {
+        console.error("storage save failed", e);
+      }
+    }
+
+    function symbolCacheKey(symbol) {
+      return `us-dash-cache-${symbol}`;
+    }
+    function loadCachedEntry(symbol) {
+      try {
+        const raw = localStorage.getItem(symbolCacheKey(symbol));
+        return raw ? JSON.parse(raw) : null;
+      } catch {
+        return null;
+      }
+    }
+    function saveCachedEntry(symbol, { quote, series, timeframe, fundamentals, profile }) {
+      try {
+        localStorage.setItem(
+          symbolCacheKey(symbol),
+          JSON.stringify({ quote, series, timeframe, fundamentals, profile, cachedAt: Date.now() })
+        );
+      } catch (e) {
+        console.error("cache save failed", e);
+      }
+    }
+
+    function tdCounterKey() {
+      return `td-calls-${new Date().toISOString().slice(0, 10)}`;
+    }
+    function bumpTdCalls() {
+      try {
+        const k = tdCounterKey();
+        const next = (parseInt(localStorage.getItem(k), 10) || 0) + 1;
+        localStorage.setItem(k, String(next));
+        return next;
+      } catch {
+        return null;
+      }
+    }
+    function getTdCallsToday() {
+      try {
+        return parseInt(localStorage.getItem(tdCounterKey()), 10) || 0;
+      } catch {
+        return 0;
+      }
+    }
+
+    let sectorAutoScanned = false;
+
+    /* ============================================================
+       TECHNICAL ENGINE
+       ============================================================ */
+    function ema(values, period) {
+      const k = 2 / (period + 1);
+      const out = new Array(values.length).fill(null);
+      let prev = null;
+      values.forEach((v, i) => {
+        if (v == null) return;
+        prev = prev == null ? v : v * k + prev * (1 - k);
+        out[i] = prev;
+      });
+      return out;
+    }
+
+    function rsi(closes, period = 14) {
+      const out = new Array(closes.length).fill(null);
+      if (closes.length <= period) return out;
+      let gainSum = 0, lossSum = 0;
+      for (let i = 1; i <= period; i++) {
+        const d = closes[i] - closes[i - 1];
+        if (d >= 0) gainSum += d; else lossSum -= d;
+      }
+      let avgGain = gainSum / period, avgLoss = lossSum / period;
+      out[period] = 100 - 100 / (1 + (avgLoss === 0 ? 100 : avgGain / avgLoss));
+      for (let i = period + 1; i < closes.length; i++) {
+        const d = closes[i] - closes[i - 1];
+        const gain = d > 0 ? d : 0, loss = d < 0 ? -d : 0;
+        avgGain = (avgGain * (period - 1) + gain) / period;
+        avgLoss = (avgLoss * (period - 1) + loss) / period;
+        const rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
+        out[i] = 100 - 100 / (1 + rs);
+      }
+      return out;
+    }
+
+    function macd(closes) {
+      const e12 = ema(closes, 12), e26 = ema(closes, 26);
+      const line = closes.map((_, i) => (e12[i] != null && e26[i] != null ? e12[i] - e26[i] : null));
+      const signal = ema(line.map((v) => (v == null ? 0 : v)), 9);
+      const hist = line.map((v, i) => (v != null && signal[i] != null ? v - signal[i] : null));
+      return { line, signal, hist };
+    }
+
+    function findSwings(bars, window = 5) {
+      const highs = [], lows = [];
+      for (let i = window; i < bars.length - window; i++) {
+        const slice = bars.slice(i - window, i + window + 1);
+        if (bars[i].high === Math.max(...slice.map((b) => b.high))) highs.push({ price: bars[i].high, idx: i });
+        if (bars[i].low === Math.min(...slice.map((b) => b.low))) lows.push({ price: bars[i].low, idx: i });
+      }
+      return { highs, lows };
+    }
+
+    function clusterLevels(points, tolerancePct, totalBars) {
+      const sorted = [...points].sort((a, b) => a.price - b.price);
+      const clusters = [];
+      sorted.forEach((p) => {
+        const last = clusters[clusters.length - 1];
+        if (last && Math.abs(p.price - last.avg) / last.avg <= tolerancePct) {
+          last.prices.push(p.price);
+          last.idxs.push(p.idx);
+          last.avg = last.prices.reduce((a, b) => a + b, 0) / last.prices.length;
+        } else {
+          clusters.push({ avg: p.price, prices: [p.price], idxs: [p.idx] });
+        }
+      });
+      return clusters.map((c) => ({
+        price: c.avg,
+        touches: c.prices.length,
+        strength: c.prices.length * 2 + (Math.max(...c.idxs) / totalBars),
+      }));
+    }
+
+    function getSupportResistance(bars, currentPrice) {
+      if (!bars || bars.length < 20) return { support: [], resistance: [] };
+      const { highs, lows } = findSwings(bars, 5);
+      const tolerance = 0.0002;
+
+      const resistance = clusterLevels(highs, tolerance, bars.length)
+        .filter((c) => c.price > currentPrice * 1.0001)
+        .sort((a, b) => b.touches - a.touches || b.strength - a.strength)
+        .slice(0, 3)
+        .sort((a, b) => a.price - b.price);
+
+      const support = clusterLevels(lows, tolerance, bars.length)
+        .filter((c) => c.price < currentPrice * 0.9999)
+        .sort((a, b) => b.touches - a.touches || b.strength - a.strength)
+        .slice(0, 3)
+        .sort((a, b) => a.price - b.price);
+
+      return { support, resistance };
+    }
+
+    function classify(bars) {
+      const closes = bars.map((b) => b.close);
+      const last = closes.length - 1;
+      const price = closes[last];
+      const e20 = ema(closes, 20), e50 = ema(closes, 50), e200 = ema(closes, 200);
+      const rsiArr = rsi(closes, 14);
+      const { hist } = macd(closes);
+      const rsiVal = rsiArr[last];
+      const h = hist[last], hPrev = hist[last - 1];
+      const has200 = closes.length > 200;
+
+      let trend = "Sideways", trendScore = 0;
+      if (e20[last] != null && e50[last] != null) {
+        const alignedUp = price > e20[last] && e20[last] > e50[last] && (!has200 || e50[last] > e200[last]);
+        const alignedDown = price < e20[last] && e20[last] < e50[last] && (!has200 || e50[last] < e200[last]);
+        if (alignedUp) { trend = "Uptrend"; trendScore = 2; }
+        else if (price > e50[last]) { trend = "Uptrend"; trendScore = 1; }
+        else if (alignedDown) { trend = "Downtrend"; trendScore = -2; }
+        else if (price < e50[last]) { trend = "Downtrend"; trendScore = -1; }
+      }
+
+      let momentum = "Neutral";
+      if (rsiVal != null && h != null && hPrev != null) {
+        if (rsiVal > 60 && h > hPrev) momentum = "Strong Bullish";
+        else if (rsiVal > 50 && h > 0) momentum = "Bullish";
+        else if (rsiVal < 40 && h < hPrev) momentum = "Strong Bearish";
+        else if (rsiVal < 50 && h < 0) momentum = "Bearish";
+      }
+
+      return { trend, trendScore, momentum, rsi: rsiVal, macdHist: h, e20: e20[last], e50: e50[last], e200: has200 ? e200[last] : null, price };
+    }
+
+    /* ============================================================
+       API LAYER
+       ============================================================ */
+    async function fetchSeries(symbol, tdKey, interval = "1week", outputsize = 220) {
+      return tdQueue(async () => {
+        bumpTdCalls();
+        const res = await fetch(`${TD_BASE}/time_series?symbol=${encodeURIComponent(symbol)}&interval=${interval}&outputsize=${outputsize}&apikey=${tdKey}`);
+        const data = await res.json();
+        if (!data.values) throw new Error(data.message || "ไม่พบข้อมูลราคาย้อนหลัง (Twelve Data)");
+        return data.values.slice().reverse().map((v) => ({
+          date: v.datetime, open: +v.open, high: +v.high, low: +v.low, close: +v.close, volume: +v.volume,
+        }));
+      });
+    }
+
+    async function fetchQuote(symbol, tdKey) {
+      return tdQueue(async () => {
+        bumpTdCalls();
+        const res = await fetch(`${TD_BASE}/quote?symbol=${encodeURIComponent(symbol)}&apikey=${tdKey}`);
+        const data = await res.json();
+        if (data.status === "error" || !data.close) throw new Error(data.message || "ดึงราคาล่าสุดจาก Twelve Data ไม่สำเร็จ");
+        return {
+          close: +data.close,
+          percent_change: +data.percent_change,
+          open: +data.open,
+          high: +data.high,
+          low: +data.low,
+          previous_close: +data.previous_close,
+          volume: data.volume ? +data.volume : null,
+        };
+      });
+    }
+
+    async function fetchFundamentals(symbol, fhKey) {
+      if (!fhKey) return null;
+      return fhQueue(async () => {
+        const res = await fetch(`${FH_BASE}/stock/metric?symbol=${encodeURIComponent(symbol)}&metric=all&token=${fhKey}`);
+        const data = await res.json();
+        return data.metric || {};
+      });
+    }
+
+    async function fetchProfile(symbol, fhKey) {
+      if (!fhKey) return null;
+      return fhQueue(async () => {
+        const res = await fetch(`${FH_BASE}/stock/profile2?symbol=${encodeURIComponent(symbol)}&token=${fhKey}`);
+        return res.json();
+      });
+    }
+
+    function pick(obj, keys) {
+      if (!obj) return null;
+      for (const k of keys) if (obj[k] != null && !Number.isNaN(obj[k])) return obj[k];
+      return null;
+    }
+
+    /* ============================================================
+       FORMATTERS & STYLES
+       ============================================================ */
+    const fmtPrice = (n) => (n == null || isNaN(n) ? "—" : n.toFixed(2));
+    const fmtPct = (n) => (n == null || isNaN(n) ? "—" : `${n >= 0 ? "+" : ""}${n.toFixed(2)}%`);
+    const fmtBig = (n) => {
+      if (n == null || isNaN(n)) return "—";
+      const abs = Math.abs(n);
+      if (abs >= 1e12) return (n / 1e12).toFixed(2) + "T";
+      if (abs >= 1e9) return (n / 1e9).toFixed(2) + "B";
+      if (abs >= 1e6) return (n / 1e6).toFixed(2) + "M";
+      return n.toLocaleString();
+    };
+
+    const TREND_STYLE = {
+      Uptrend: "text-emerald-400 bg-emerald-500/10 border-emerald-500/30",
+      Downtrend: "text-red-400 bg-red-500/10 border-red-500/30",
+      Sideways: "text-amber-400 bg-amber-500/10 border-amber-500/30",
+    };
+    const MOM_STYLE = {
+      "Strong Bullish": "text-emerald-400 bg-emerald-500/10 border-emerald-500/30 font-bold",
+      Bullish: "text-emerald-300 bg-emerald-500/5 border-emerald-500/20",
+      Neutral: "text-zinc-400 bg-zinc-500/10 border-zinc-500/30",
+      Bearish: "text-red-300 bg-red-500/5 border-red-500/20",
+      "Strong Bearish": "text-red-400 bg-red-500/10 border-red-500/30",
+    };
+    const TREND_TH = { Uptrend: "ขาขึ้น", Downtrend: "ขาลง", Sideways: "แกว่งตัว" };
+    const MOM_TH = {
+      "Strong Bullish": "โมเมนตัมบวกแรง 🔥", Bullish: "โมเมนตัมบวก", Neutral: "เป็นกลาง",
+      Bearish: "โมเมนตัมลบ", "Strong Bearish": "โมเมนตัมลบแรง",
+    };
+
+    /* ============================================================
+       WEEKLY RECOMMENDED PICKS (10 STOCKS - STRONG BULLISH ONLY)
+       ============================================================ */
+    const COUNTRY_META = {
+      US: { name: "สหรัฐฯ", flag: "🇺🇸", region: "อเมริกาเหนือ" },
+      CA: { name: "แคนาดา", flag: "🇨🇦", region: "อเมริกาเหนือ" },
+      NL: { name: "เนเธอร์แลนด์", flag: "🇳🇱", region: "ยุโรป" },
+      DK: { name: "เดนมาร์ก", flag: "🇩🇰", region: "ยุโรป" },
+      DE: { name: "เยอรมนี", flag: "🇩🇪", region: "ยุโรป" },
+      GB: { name: "สหราชอาณาจักร", flag: "🇬🇧", region: "ยุโรป" },
+      BE: { name: "เบลเยียม", flag: "🇧🇪", region: "ยุโรป" },
+      FR: { name: "ฝรั่งเศส", flag: "🇫🇷", region: "ยุโรป" },
+      IT: { name: "อิตาลี", flag: "🇮🇹", region: "ยุโรป" },
+      SE: { name: "สวีเดน", flag: "🇸🇪", region: "ยุโรป" },
+      FI: { name: "ฟินแลนด์", flag: "🇫🇮", region: "ยุโรป" },
+      TW: { name: "ไต้หวัน", flag: "🇹🇼", region: "เอเชีย" },
+      CN: { name: "จีน", flag: "🇨🇳", region: "เอเชีย" },
+      JP: { name: "ญี่ปุ่น", flag: "🇯🇵", region: "เอเชีย" },
+      IN: { name: "อินเดีย", flag: "🇮🇳", region: "เอเชีย" },
+      KR: { name: "เกาหลีใต้", flag: "🇰🇷", region: "เอเชีย" },
+      SG: { name: "สิงคโปร์", flag: "🇸🇬", region: "เอเชีย" },
+      AU: { name: "ออสเตรเลีย", flag: "🇦🇺", region: "โอเชียเนีย" },
+      AR: { name: "อาร์เจนตินา", flag: "🇦🇷", region: "ลาตินอเมริกา" },
+      BR: { name: "บราซิล", flag: "🇧🇷", region: "ลาตินอเมริกา" },
+      CH: { name: "สวิตเซอร์แลนด์", flag: "🇨🇭", region: "ยุโรป" },
+      ES: { name: "สเปน", flag: "🇪🇸", region: "ยุโรป" },
+      NO: { name: "นอร์เวย์", flag: "🇳🇴", region: "ยุโรป" },
+      IE: { name: "ไอร์แลนด์", flag: "🇮🇪", region: "ยุโรป" },
+      MX: { name: "เม็กซิโก", flag: "🇲🇽", region: "ลาตินอเมริกา" },
+      CL: { name: "ชิลี", flag: "🇨🇱", region: "ลาตินอเมริกา" },
+      CO: { name: "โคลอมเบีย", flag: "🇨🇴", region: "ลาตินอเมริกา" },
+      IL: { name: "อิสราเอล", flag: "🇮🇱", region: "ตะวันออกกลาง" },
+      ZA: { name: "แอฟริกาใต้", flag: "🇿🇦", region: "แอฟริกา" },
+    };
+    function getCountryMeta(code) {
+      return COUNTRY_META[code] || { name: code || "ไม่ทราบ", flag: "🌐", region: "อื่นๆ" };
+    }
+
+    const TRENDING_UNIVERSE = [
+      { symbol: "NVDA", country: "US", sector: "Technology", catalyst: "ผู้นำชิป AI & Data Center ความต้องการประมวลผลเติบโตต่อเนื่อง" },
+      { symbol: "PLTR", country: "US", sector: "Software", catalyst: "ขยายตัวของแพลตฟอร์ม AIP AI ในภาครัฐและเอกชนสหรัฐฯ" },
+      { symbol: "RKLB", country: "US", sector: "Aerospace", catalyst: "สัญญาจัดส่งดาวเทียมเชิงพาณิชย์และภารกิจอวกาศเพิ่มขึ้นต่อเนื่อง" },
+      { symbol: "AVGO", country: "US", sector: "Semiconductors", catalyst: "ดีมานด์ Custom AI ASIC และ Networking ใน AI Data Center" },
+      { symbol: "CRWD", country: "US", sector: "Cybersecurity", catalyst: "Cybersecurity Platform เติบโตจากการเปลี่ยนผ่านสู่ Cloud" },
+      { symbol: "AMAT", country: "US", sector: "Semiconductors", catalyst: "ยอดสั่งซื้อเครื่องจักรผลิตชิป semiconductor เพิ่มขึ้นทั่วโลก" },
+      { symbol: "FIX", country: "US", sector: "Industrials", catalyst: "งานก่อสร้างและวางระบบ HVAC ในศูนย์ AI Data Center เติบโตก้าวกระโดด" },
+      { symbol: "LITE", country: "US", sector: "Communications", catalyst: "ความต้องการ Optical & Photonics Component สำหรับระบบสื่อสาร AI" },
+      { symbol: "GLW", country: "US", sector: "Technology", catalyst: "ชิ้นส่วนกระจกขั้นสูงและสายเคเบิลใยแก้วนำแสงใน AI Infrastructure" },
+      { symbol: "DDOG", country: "US", sector: "Software", catalyst: "ระบบ Cloud Observability & Security เติบโตตามการใช้งาน AI Cloud" },
+      { symbol: "CAT", country: "US", sector: "Industrials", catalyst: "ยอดสั่งซื้อเครื่องจักรโครงสร้างพื้นฐานและพลังงานไฟฟ้าสำรอง Data Center" },
+      { symbol: "VRT", country: "US", sector: "Industrials", catalyst: "ระบบพลังงานและระบายความร้อนสำหรับ AI Data Center ขยายตัวตามดีมานด์ Hyperscaler" },
+      { symbol: "CIEN", country: "US", sector: "Communications", catalyst: "อุปกรณ์เครือข่ายใยแก้วนำแสงความเร็วสูงรองรับทราฟฟิก AI ที่เพิ่มขึ้น" },
+      { symbol: "AXON", country: "US", sector: "Public Safety Tech", catalyst: "ขยายฐานลูกค้าอุปกรณ์ Taser และซอฟต์แวร์บริหารหลักฐานภาครัฐ" },
+      { symbol: "RBRK", country: "US", sector: "Software", catalyst: "แพลตฟอร์ม Cloud Data Security ปกป้องข้อมูลองค์กรจากภัย Ransomware" },
+      { symbol: "CELH", country: "US", sector: "Consumer", catalyst: "เครื่องดื่มเพื่อสุขภาพขยายส่วนแบ่งตลาดในสหรัฐฯ ต่อเนื่อง" },
+      { symbol: "ACHR", country: "US", sector: "Aerospace", catalyst: "พัฒนาอากาศยาน eVTOL ไฟฟ้าสำหรับการเดินทางในเมืองแห่งอนาคต" },
+      { symbol: "JOBY", country: "US", sector: "Aerospace", catalyst: "เร่งทดสอบและขอใบรับรองอากาศยานแท็กซี่บินไฟฟ้าเชิงพาณิชย์" },
+      { symbol: "ONDS", country: "US", sector: "Aerospace", catalyst: "พัฒนาโดรนและเครือข่ายไร้สายสำหรับภาคอุตสาหกรรมและความมั่นคง" },
+      { symbol: "IONQ", country: "US", sector: "Technology", catalyst: "พัฒนาคอมพิวเตอร์ควอนตัมเชิงพาณิชย์รายแรกๆ ของโลก" },
+      { symbol: "SMCI", country: "US", sector: "Technology", catalyst: "ผู้ผลิตเซิร์ฟเวอร์ AI ประสิทธิภาพสูงรองรับ GPU รุ่นใหม่" },
+      { symbol: "SHOP", country: "CA", sector: "Software", catalyst: "แพลตฟอร์มอีคอมเมิร์ซ Shopify ขยายฐานร้านค้าออนไลน์ทั่วโลก" },
+      { symbol: "CNQ", country: "CA", sector: "Energy", catalyst: "ผู้ผลิตน้ำมัน-ก๊าซรายใหญ่ของแคนาดา ต้นทุนผลิตต่ำและกระแสเงินสดแข็งแกร่ง" },
+      { symbol: "ASML", country: "NL", sector: "Semiconductors", catalyst: "ผู้ผลิตเครื่อง EUV Lithography รายเดียวของโลกที่จำเป็นต่อการผลิตชิปขั้นสูง" },
+      { symbol: "NVO", country: "DK", sector: "Healthcare", catalyst: "ยาลดน้ำหนัก/เบาหวานกลุ่ม GLP-1 ความต้องการทั่วโลกยังสูงต่อเนื่อง" },
+      { symbol: "SAP", country: "DE", sector: "Software", catalyst: "เปลี่ยนผ่านลูกค้าองค์กรสู่ระบบ Cloud ERP รุ่นใหม่ (RISE with SAP)" },
+      { symbol: "SHEL", country: "GB", sector: "Energy", catalyst: "ผู้นำพลังงานโลกเดินหน้าคืนทุนผู้ถือหุ้นและลงทุน LNG เพิ่ม" },
+      { symbol: "AZN", country: "GB", sector: "Healthcare", catalyst: "กลุ่มยารักษามะเร็งและยาชีววัตถุมีไปป์ไลน์เติบโตแข็งแกร่ง" },
+      { symbol: "DEO", country: "GB", sector: "Consumer", catalyst: "แบรนด์เครื่องดื่มพรีเมียมระดับโลกฟื้นตัวตามกำลังซื้อผู้บริโภค" },
+      { symbol: "BUD", country: "BE", sector: "Consumer", catalyst: "ผู้ผลิตเบียร์รายใหญ่ที่สุดของโลกขยายส่วนแบ่งตลาดกลุ่มพรีเมียม" },
+      { symbol: "SNY", country: "FR", sector: "Healthcare", catalyst: "ไปป์ไลน์ยาภูมิคุ้มกันบำบัดและวัคซีนเติบโตต่อเนื่อง" },
+      { symbol: "TTE", country: "FR", sector: "Energy", catalyst: "กระจายพอร์ตสู่พลังงานหมุนเวียนควบคู่ธุรกิจน้ำมัน-ก๊าซหลัก" },
+      { symbol: "ERIC", country: "SE", sector: "Communications", catalyst: "อุปกรณ์โครงข่าย 5G/6G ขยายตัวตามการลงทุนผู้ให้บริการโทรคมนาคมทั่วโลก" },
+      { symbol: "NOK", country: "FI", sector: "Communications", catalyst: "โซลูชันเครือข่ายโทรคมนาคมได้ประโยชน์จากการอัปเกรดโครงสร้างพื้นฐาน 5G" },
+      { symbol: "TSM", country: "TW", sector: "Semiconductors", catalyst: "ยอดรับจ้างผลิตชิป AI ขั้นสูง 3nm/2nm เต็มกำลังการผลิต" },
+      { symbol: "BABA", country: "CN", sector: "E-commerce", catalyst: "ธุรกิจ Cloud และอีคอมเมิร์ซจีนฟื้นตัวพร้อมนโยบายกระตุ้นเศรษฐกิจ" },
+      { symbol: "PDD", country: "CN", sector: "E-commerce", catalyst: "แพลตฟอร์มอีคอมเมิร์ซราคาประหยัด Temu ขยายตลาดต่างประเทศรวดเร็ว" },
+      { symbol: "JD", country: "CN", sector: "E-commerce", catalyst: "เครือข่ายโลจิสติกส์และคลังสินค้าหนุนส่วนแบ่งตลาดอีคอมเมิร์ซจีน" },
+      { symbol: "NTES", country: "CN", sector: "Technology", catalyst: "รายได้เกมออนไลน์เติบโตต่อเนื่องทั้งตลาดในและต่างประเทศ" },
+      { symbol: "TM", country: "JP", sector: "Automotive", catalyst: "ยอดขายรถยนต์ไฮบริดทั่วโลกเติบโตหนุนกำไรและส่วนแบ่งตลาด" },
+      { symbol: "SONY", country: "JP", sector: "Technology", catalyst: "ธุรกิจเกม เพลง และภาพยนตร์เติบโตหนุนกำไรกลุ่มบันเทิง" },
+      { symbol: "HMC", country: "JP", sector: "Automotive", catalyst: "เร่งเปลี่ยนผ่านสู่รถยนต์ไฟฟ้าและไฮบริดรุ่นใหม่ในตลาดโลก" },
+      { symbol: "INFY", country: "IN", sector: "IT Services", catalyst: "บริการ IT/Digital Transformation เติบโตตามดีมานด์ลูกค้าองค์กรทั่วโลก" },
+      { symbol: "WIT", country: "IN", sector: "IT Services", catalyst: "ขยายบริการ AI และ Cloud Consulting ให้ลูกค้าองค์กรข้ามชาติ" },
+      { symbol: "HDB", country: "IN", sector: "Financials", catalyst: "ธนาคารเอกชนรายใหญ่ของอินเดียเติบโตตามสินเชื่อผู้บริโภคที่ขยายตัว" },
+      { symbol: "CPNG", country: "KR", sector: "E-commerce", catalyst: "แพลตฟอร์มอีคอมเมิร์ซและโลจิสติกส์ Rocket Delivery ขยายฐานลูกค้าเกาหลีใต้" },
+      { symbol: "GRAB", country: "SG", sector: "Technology", catalyst: "แพลตฟอร์มซูเปอร์แอปขนส่ง-ส่งอาหาร-การเงินขยายตัวทั่วเอเชียตะวันออกเฉียงใต้" },
+      { symbol: "SE", country: "SG", sector: "E-commerce", catalyst: "ธุรกิจอีคอมเมิร์ซ Shopee และเกม Garena เติบโตพร้อมทำกำไรดีขึ้น" },
+      { symbol: "BHP", country: "AU", sector: "Materials", catalyst: "ผู้ผลิตแร่เหล็กและทองแดงรายใหญ่ได้ประโยชน์จากดีมานด์โครงสร้างพื้นฐานโลก" },
+      { symbol: "RIO", country: "AU", sector: "Materials", catalyst: "ขยายกำลังผลิตแร่เหล็กและลิเธียมรองรับเทรนด์พลังงานสะอาด" },
+      { symbol: "MELI", country: "AR", sector: "E-commerce", catalyst: "แพลตฟอร์มอีคอมเมิร์ซและฟินเทคอันดับหนึ่งของลาตินอเมริกาเติบโตต่อเนื่อง" },
+      { symbol: "VALE", country: "BR", sector: "Materials", catalyst: "ผู้ผลิตแร่เหล็กรายใหญ่ของโลกได้ประโยชน์จากราคาสินค้าโภคภัณฑ์ฟื้นตัว" },
+      { symbol: "PBR", country: "BR", sector: "Energy", catalyst: "แหล่งน้ำมันน้ำลึก Pre-salt ต้นทุนต่ำหนุนกระแสเงินสดและเงินปันผล" },
+      { symbol: "ITUB", country: "BR", sector: "Financials", catalyst: "ธนาคารเอกชนรายใหญ่ของบราซิลเติบโตตามสินเชื่อและดิจิทัลแบงกิ้ง" },
+      { symbol: "MU", country: "US", sector: "Semiconductors", catalyst: "หน่วยความจำ HBM สำหรับ AI Data Center ความต้องการพุ่งสูง" },
+      { symbol: "APP", country: "US", sector: "Software", catalyst: "แพลตฟอร์มโฆษณาบนมือถือขับเคลื่อนด้วย AI เติบโตก้าวกระโดด" },
+      { symbol: "SOFI", country: "US", sector: "Financials", catalyst: "แพลตฟอร์มการเงินดิจิทัลขยายฐานลูกค้าและผลิตภัณฑ์สินเชื่อ" },
+      { symbol: "UPST", country: "US", sector: "Financials", catalyst: "ปล่อยสินเชื่อด้วยโมเดล AI แทนระบบเครดิตสกอร์แบบเดิม" },
+      { symbol: "AFRM", country: "US", sector: "Financials", catalyst: "บริการ Buy Now Pay Later ขยายพันธมิตรร้านค้าออนไลน์" },
+      { symbol: "DKNG", country: "US", sector: "Consumer", catalyst: "แพลตฟอร์มพนันกีฬาออนไลน์ขยายส่วนแบ่งตลาดในสหรัฐฯ" },
+      { symbol: "RBLX", country: "US", sector: "Technology", catalyst: "แพลตฟอร์มเกมและโลกเสมือนผู้ใช้งานเติบโตต่อเนื่อง" },
+      { symbol: "U", country: "US", sector: "Software", catalyst: "เอนจินพัฒนาเกมและคอนเทนต์ 3D สำหรับนักพัฒนาทั่วโลก" },
+      { symbol: "PATH", country: "US", sector: "Software", catalyst: "แพลตฟอร์ม Automation/RPA ขยายฐานลูกค้าองค์กร" },
+      { symbol: "S", country: "US", sector: "Cybersecurity", catalyst: "แพลตฟอร์มความปลอดภัยไซเบอร์ขับเคลื่อนด้วย AI" },
+      { symbol: "ZS", country: "US", sector: "Cybersecurity", catalyst: "ระบบ Zero Trust Security บน Cloud เติบโตตามการย้ายระบบองค์กร" },
+      { symbol: "MDB", country: "US", sector: "Software", catalyst: "ฐานข้อมูล NoSQL รองรับแอปพลิเคชัน AI และ Cloud" },
+      { symbol: "HIMS", country: "US", sector: "Healthcare", catalyst: "แพลตฟอร์ม Telehealth ขยายฐานสมาชิกด้านสุขภาพและความงาม" },
+      { symbol: "TOST", country: "US", sector: "Software", catalyst: "ระบบจัดการร้านอาหารครบวงจรขยายฐานลูกค้าในสหรัฐฯ" },
+      { symbol: "CVNA", country: "US", sector: "Consumer", catalyst: "แพลตฟอร์มซื้อขายรถมือสองออนไลน์ฟื้นตัวแข็งแกร่ง" },
+      { symbol: "DUOL", country: "US", sector: "Software", catalyst: "แอปเรียนภาษาด้วย AI ขยายฐานผู้ใช้งานทั่วโลก" },
+      { symbol: "APLD", country: "US", sector: "Technology", catalyst: "ศูนย์ข้อมูลรองรับ AI/GPU Cloud Computing ขยายกำลังการผลิต" },
+      { symbol: "IREN", country: "US", sector: "Technology", catalyst: "ศูนย์ข้อมูลพลังงานสะอาดรองรับ AI Computing และ Bitcoin Mining" },
+      { symbol: "CRDO", country: "US", sector: "Semiconductors", catalyst: "ชิปเชื่อมต่อความเร็วสูงสำหรับเครือข่าย AI Data Center" },
+      { symbol: "ALAB", country: "US", sector: "Semiconductors", catalyst: "ชิปเชื่อมต่อ Connectivity สำหรับ AI/Cloud Infrastructure" },
+      { symbol: "FTNT", country: "US", sector: "Cybersecurity", catalyst: "โซลูชันความปลอดภัยเครือข่ายครบวงจรสำหรับองค์กร" },
+      { symbol: "OKTA", country: "US", sector: "Cybersecurity", catalyst: "ระบบยืนยันตัวตนและจัดการสิทธิ์การเข้าถึงบน Cloud" },
+      { symbol: "TTD", country: "US", sector: "Software", catalyst: "แพลตฟอร์มโฆษณาดิจิทัลแบบ Programmatic เติบโตต่อเนื่อง" },
+      { symbol: "RIVN", country: "US", sector: "Automotive", catalyst: "ผู้ผลิตรถกระบะ/SUV ไฟฟ้าขยายกำลังการผลิตในสหรัฐฯ" },
+      { symbol: "LCID", country: "US", sector: "Automotive", catalyst: "รถยนต์ไฟฟ้าหรูขยายไลน์ผลิตภัณฑ์และกำลังการผลิต" },
+      { symbol: "FSLR", country: "US", sector: "Materials", catalyst: "ผู้ผลิตแผงโซลาร์เซลล์รายใหญ่ได้ประโยชน์จากนโยบายพลังงานสะอาดสหรัฐฯ" },
+      { symbol: "ENPH", country: "US", sector: "Energy", catalyst: "ระบบไมโครอินเวอร์เตอร์พลังงานแสงอาทิตย์สำหรับที่อยู่อาศัย" },
+      { symbol: "CEG", country: "US", sector: "Utilities", catalyst: "โรงไฟฟ้านิวเคลียร์รายใหญ่ได้ประโยชน์จากดีมานด์ไฟฟ้า AI Data Center" },
+      { symbol: "VST", country: "US", sector: "Utilities", catalyst: "ผู้ผลิตไฟฟ้ารายใหญ่รองรับดีมานด์พลังงานจาก AI/Data Center ที่เพิ่มขึ้น" },
+      { symbol: "OKLO", country: "US", sector: "Energy", catalyst: "พัฒนาเครื่องปฏิกรณ์นิวเคลียร์ขนาดเล็ก (SMR) รองรับพลังงาน AI Data Center" },
+      { symbol: "UEC", country: "US", sector: "Energy", catalyst: "ผู้ผลิตแร่ยูเรเนียมได้ประโยชน์จากดีมานด์เชื้อเพลิงนิวเคลียร์ที่ฟื้นตัว" },
+      { symbol: "MP", country: "US", sector: "Materials", catalyst: "ผู้ผลิตแร่หายาก (Rare Earth) รายใหญ่ในสหรัฐฯ ลดพึ่งพาการนำเข้าจากจีน" },
+      { symbol: "FCX", country: "US", sector: "Materials", catalyst: "ผู้ผลิตทองแดงรายใหญ่ได้ประโยชน์จากดีมานด์สายไฟฟ้าและ EV" },
+      { symbol: "KTOS", country: "US", sector: "Aerospace", catalyst: "พัฒนาโดรนเป้าหมายและระบบป้องกันภัยไร้คนขับสำหรับกองทัพ" },
+      { symbol: "ANET", country: "US", sector: "Technology", catalyst: "สวิตช์เครือข่ายความเร็วสูงสำหรับ AI Data Center และ Cloud" },
+      { symbol: "COHR", country: "US", sector: "Technology", catalyst: "ชิ้นส่วนออปติกส์และเลเซอร์สำหรับเครือข่าย AI ความเร็วสูง" },
+      { symbol: "MRVL", country: "US", sector: "Semiconductors", catalyst: "ชิป Custom Silicon และ Networking สำหรับ AI Data Center" },
+      { symbol: "CDNS", country: "US", sector: "Software", catalyst: "ซอฟต์แวร์ออกแบบชิปเซมิคอนดักเตอร์ขั้นสูง" },
+      { symbol: "CCJ", country: "CA", sector: "Materials", catalyst: "ผู้ผลิตแร่ยูเรเนียมรายใหญ่ของโลกได้ประโยชน์จากดีมานด์พลังงานนิวเคลียร์" },
+      { symbol: "BN", country: "CA", sector: "Financials", catalyst: "กลุ่มบริหารสินทรัพย์ทางเลือกระดับโลกขยายพอร์ตพลังงานสะอาดและโครงสร้างพื้นฐาน" },
+      { symbol: "UBS", country: "CH", sector: "Financials", catalyst: "ธนาคารเพื่อการลงทุนและบริหารความมั่งคั่งรายใหญ่ของสวิตเซอร์แลนด์" },
+      { symbol: "NVS", country: "CH", sector: "Healthcare", catalyst: "บริษัทยาชั้นนำมีไปป์ไลน์ยารักษาโรคร้ายแรงแข็งแกร่ง" },
+      { symbol: "LOGI", country: "CH", sector: "Technology", catalyst: "อุปกรณ์เสริมคอมพิวเตอร์และเกมมิ่งขยายส่วนแบ่งตลาดทั่วโลก" },
+      { symbol: "SAN", country: "ES", sector: "Financials", catalyst: "ธนาคารรายใหญ่ของสเปนขยายธุรกิจในละตินอเมริกาและยุโรป" },
+      { symbol: "TEF", country: "ES", sector: "Communications", catalyst: "ผู้ให้บริการโทรคมนาคมรายใหญ่ในสเปนและละตินอเมริกา" },
+      { symbol: "EQNR", country: "NO", sector: "Energy", catalyst: "บริษัทพลังงานรายใหญ่ของนอร์เวย์ลงทุนขยายพลังงานลมนอกชายฝั่ง" },
+      { symbol: "RYAAY", country: "IE", sector: "Consumer", catalyst: "สายการบินต้นทุนต่ำรายใหญ่ของยุโรปขยายเส้นทางบินต่อเนื่อง" },
+      { symbol: "ETN", country: "IE", sector: "Industrials", catalyst: "โซลูชันบริหารจัดการพลังงานไฟฟ้าสำหรับ AI Data Center" },
+      { symbol: "RACE", country: "IT", sector: "Automotive", catalyst: "แบรนด์รถสปอร์ตหรูระดับโลกรักษาราคาและอัตรากำไรสูงต่อเนื่อง" },
+      { symbol: "STLA", country: "IT", sector: "Automotive", catalyst: "กลุ่มผู้ผลิตรถยนต์ข้ามชาติเร่งเปลี่ยนผ่านสู่รถยนต์ไฟฟ้า" },
+      { symbol: "E", country: "IT", sector: "Energy", catalyst: "บริษัทพลังงานรายใหญ่ของอิตาลีลงทุนขยายก๊าซธรรมชาติและพลังงานหมุนเวียน" },
+      { symbol: "STM", country: "NL", sector: "Semiconductors", catalyst: "ผู้ผลิตชิปเซมิคอนดักเตอร์รายใหญ่ของยุโรปสำหรับยานยนต์และอุตสาหกรรม" },
+      { symbol: "NBIS", country: "NL", sector: "Technology", catalyst: "โครงสร้างพื้นฐาน AI Cloud GPU สำหรับนักพัฒนาและองค์กร" },
+      { symbol: "EADSY", country: "FR", sector: "Aerospace", catalyst: "ผู้ผลิตเครื่องบินพาณิชย์รายใหญ่ของโลก ยอดสั่งซื้อเครื่องบินฟื้นตัวแข็งแกร่ง" },
+      { symbol: "LVMUY", country: "FR", sector: "Consumer", catalyst: "กลุ่มสินค้าหรูระดับโลกรายใหญ่ที่สุด ครอบคลุมแฟชั่นและเครื่องดื่ม" },
+      { symbol: "SIEGY", country: "DE", sector: "Industrials", catalyst: "กลุ่มเทคโนโลยีอุตสาหกรรมและระบบออโตเมชันรายใหญ่ของเยอรมนี" },
+      { symbol: "UL", country: "GB", sector: "Consumer", catalyst: "กลุ่มสินค้าอุปโภคบริโภครายใหญ่ระดับโลกแบรนด์แข็งแกร่ง" },
+      { symbol: "BP", country: "GB", sector: "Energy", catalyst: "บริษัทพลังงานรายใหญ่ของอังกฤษลงทุนเปลี่ยนผ่านพลังงานสะอาด" },
+      { symbol: "HSBC", country: "GB", sector: "Financials", catalyst: "ธนาคารรายใหญ่ระดับโลกฐานลูกค้าเอเชียและยุโรปแข็งแกร่ง" },
+      { symbol: "LI", country: "CN", sector: "Automotive", catalyst: "ผู้ผลิตรถยนต์ไฟฟ้า/ไฮบริดจีนยอดส่งมอบเติบโตต่อเนื่อง" },
+      { symbol: "NIO", country: "CN", sector: "Automotive", catalyst: "ผู้ผลิตรถยนต์ไฟฟ้าพรีเมียมจีนขยายไลน์ผลิตภัณฑ์และเครือข่ายสลับแบตเตอรี่" },
+      { symbol: "XPEV", country: "CN", sector: "Automotive", catalyst: "รถยนต์ไฟฟ้าอัจฉริยะจีนเร่งพัฒนาเทคโนโลยีขับขี่อัตโนมัติ" },
+      { symbol: "TCOM", country: "CN", sector: "Consumer", catalyst: "แพลตฟอร์มจองท่องเที่ยวออนไลน์รายใหญ่ของจีนฟื้นตัวตามดีมานด์เดินทาง" },
+      { symbol: "BILI", country: "CN", sector: "Technology", catalyst: "แพลตฟอร์มวิดีโอ/คอนเทนต์เกมยอดผู้ใช้งานและรายได้โฆษณาเติบโต" },
+      { symbol: "BIDU", country: "CN", sector: "Technology", catalyst: "ผู้นำ AI และค้นหาข้อมูลของจีนขยายบริการ Cloud และรถขับเคลื่อนอัตโนมัติ" },
+      { symbol: "TME", country: "CN", sector: "Consumer", catalyst: "แพลตฟอร์มสตรีมมิงเพลงรายใหญ่ของจีนฐานสมาชิกจ่ายเงินเติบโต" },
+      { symbol: "YUMC", country: "CN", sector: "Consumer", catalyst: "เครือร้านอาหารฟาสต์ฟู้ดรายใหญ่ในจีนขยายสาขาต่อเนื่อง" },
+      { symbol: "BEKE", country: "CN", sector: "Financials", catalyst: "แพลตฟอร์มนายหน้าอสังหาริมทรัพย์ออนไลน์รายใหญ่ของจีนฟื้นตัว" },
+      { symbol: "FUTU", country: "CN", sector: "Financials", catalyst: "แพลตฟอร์มโบรกเกอร์ออนไลน์ขยายฐานลูกค้าการลงทุนในเอเชีย" },
+      { symbol: "UMC", country: "TW", sector: "Semiconductors", catalyst: "โรงงานรับจ้างผลิตชิปรายใหญ่ของไต้หวันได้ประโยชน์จากดีมานด์ชิปทั่วโลก" },
+      { symbol: "CHT", country: "TW", sector: "Communications", catalyst: "ผู้ให้บริการโทรคมนาคมรายใหญ่ของไต้หวันรายได้มั่นคง" },
+      { symbol: "KB", country: "KR", sector: "Financials", catalyst: "กลุ่มการเงินรายใหญ่ของเกาหลีใต้ผลตอบแทนผู้ถือหุ้นแข็งแกร่ง" },
+      { symbol: "PKX", country: "KR", sector: "Materials", catalyst: "ผู้ผลิตเหล็กรายใหญ่ของเกาหลีใต้ขยายธุรกิจแบตเตอรี่และวัสดุขั้นสูง" },
+      { symbol: "SKM", country: "KR", sector: "Communications", catalyst: "ผู้ให้บริการโทรคมนาคมรายใหญ่ของเกาหลีใต้ลงทุนขยาย AI และ 5G" },
+      { symbol: "IBN", country: "IN", sector: "Financials", catalyst: "ธนาคารเอกชนรายใหญ่ของอินเดียสินเชื่อและกำไรเติบโตต่อเนื่อง" },
+      { symbol: "TTM", country: "IN", sector: "Automotive", catalyst: "ผู้ผลิตรถยนต์รายใหญ่ของอินเดียยอดขายรถพาณิชย์และ EV เติบโต" },
+      { symbol: "MMYT", country: "IN", sector: "Consumer", catalyst: "แพลตฟอร์มจองท่องเที่ยวออนไลน์รายใหญ่ของอินเดียเติบโตตามดีมานด์เดินทาง" },
+      { symbol: "WNS", country: "IN", sector: "IT Services", catalyst: "บริการ Business Process Management ขยายฐานลูกค้าองค์กรทั่วโลก" },
+      { symbol: "TEAM", country: "AU", sector: "Software", catalyst: "ซอฟต์แวร์บริหารจัดการงานองค์กร (Jira/Confluence) ขยายฐานลูกค้าทั่วโลก" },
+      { symbol: "WDS", country: "AU", sector: "Energy", catalyst: "บริษัทพลังงานรายใหญ่ของออสเตรเลียลงทุนขยายก๊าซธรรมชาติเหลว (LNG)" },
+      { symbol: "NU", country: "BR", sector: "Financials", catalyst: "ธนาคารดิจิทัลรายใหญ่ของละตินอเมริกาขยายฐานผู้ใช้งานอย่างรวดเร็ว" },
+      { symbol: "STNE", country: "BR", sector: "Financials", catalyst: "แพลตฟอร์มรับชำระเงินสำหรับ SME ในบราซิลเติบโตต่อเนื่อง" },
+      { symbol: "PAGS", country: "BR", sector: "Financials", catalyst: "บริการฟินเทครับชำระเงินและธนาคารดิจิทัลขยายฐานผู้ใช้ในบราซิล" },
+      { symbol: "GGB", country: "BR", sector: "Materials", catalyst: "ผู้ผลิตเหล็กรายใหญ่ของบราซิลได้ประโยชน์จากดีมานด์ก่อสร้างในภูมิภาค" },
+      { symbol: "ERJ", country: "BR", sector: "Aerospace", catalyst: "ผู้ผลิตเครื่องบินภูมิภาครายใหญ่ยอดสั่งซื้อเครื่องบินฟื้นตัวแข็งแกร่ง" },
+      { symbol: "XP", country: "BR", sector: "Financials", catalyst: "แพลตฟอร์มการลงทุนและบริหารความมั่งคั่งรายใหญ่ของบราซิล" },
+      { symbol: "AMX", country: "MX", sector: "Communications", catalyst: "ผู้ให้บริการโทรคมนาคมรายใหญ่ที่สุดในละตินอเมริกา" },
+      { symbol: "CX", country: "MX", sector: "Materials", catalyst: "ผู้ผลิตปูนซีเมนต์รายใหญ่ระดับโลกได้ประโยชน์จากดีมานด์ก่อสร้างในสหรัฐฯ" },
+      { symbol: "TV", country: "MX", sector: "Consumer", catalyst: "กลุ่มสื่อและโทรคมนาคมรายใหญ่ของเม็กซิโกขยายบริการอินเทอร์เน็ตความเร็วสูง" },
+      { symbol: "SQM", country: "CL", sector: "Materials", catalyst: "ผู้ผลิตลิเธียมรายใหญ่ของโลกได้ประโยชน์จากดีมานด์แบตเตอรี่ EV" },
+      { symbol: "EC", country: "CO", sector: "Energy", catalyst: "บริษัทน้ำมันและก๊าซรายใหญ่ที่สุดของโคลอมเบียกระแสเงินสดแข็งแกร่ง" },
+      { symbol: "CIB", country: "CO", sector: "Financials", catalyst: "ธนาคารรายใหญ่ของโคลอมเบียขยายธุรกิจสินเชื่อและดิจิทัลแบงกิ้ง" },
+      { symbol: "GLOB", country: "AR", sector: "IT Services", catalyst: "บริษัทที่ปรึกษาเทคโนโลยีดิจิทัลของอาร์เจนตินาขยายฐานลูกค้าองค์กรทั่วโลก" },
+      { symbol: "YPF", country: "AR", sector: "Energy", catalyst: "บริษัทพลังงานแห่งชาติอาร์เจนตินาได้ประโยชน์จากแหล่งก๊าซ Vaca Muerta" },
+      { symbol: "DESP", country: "AR", sector: "Consumer", catalyst: "แพลตฟอร์มจองท่องเที่ยวออนไลน์รายใหญ่ของละตินอเมริกาเติบโตต่อเนื่อง" },
+      { symbol: "CHKP", country: "IL", sector: "Cybersecurity", catalyst: "โซลูชันความปลอดภัยไซเบอร์ครบวงจรสำหรับองค์กรทั่วโลก" },
+      { symbol: "WIX", country: "IL", sector: "Software", catalyst: "แพลตฟอร์มสร้างเว็บไซต์ด้วยตัวเองขยายฐานผู้ใช้งานธุรกิจขนาดเล็ก" },
+      { symbol: "NICE", country: "IL", sector: "Software", catalyst: "ซอฟต์แวร์ศูนย์บริการลูกค้าและวิเคราะห์ข้อมูลด้วย AI สำหรับองค์กร" },
+      { symbol: "MNDY", country: "IL", sector: "Software", catalyst: "แพลตฟอร์มบริหารจัดการงานและ Workflow สำหรับทีมงานองค์กร" },
+      { symbol: "CYBR", country: "IL", sector: "Cybersecurity", catalyst: "โซลูชันบริหารจัดการสิทธิ์การเข้าถึงข้อมูลสำคัญขององค์กร" },
+      { symbol: "FVRR", country: "IL", sector: "Technology", catalyst: "แพลตฟอร์มตลาดฟรีแลนซ์ออนไลน์ขยายฐานผู้ใช้งานทั่วโลก" },
+      { symbol: "TEVA", country: "IL", sector: "Healthcare", catalyst: "ผู้ผลิตยาชื่อสามัญรายใหญ่ของโลกฟื้นตัวจากการปรับโครงสร้างธุรกิจ" },
+      { symbol: "SBSW", country: "ZA", sector: "Materials", catalyst: "ผู้ผลิตแพลทินัมและโลหะกลุ่มพิเศษรายใหญ่ได้ประโยชน์จากราคาสินค้าโภคภัณฑ์ฟื้นตัว" },
+      { symbol: "GFI", country: "ZA", sector: "Materials", catalyst: "ผู้ผลิตทองคำรายใหญ่ของโลกได้ประโยชน์จากราคาทองคำที่แข็งแกร่ง" },
+      { symbol: "AU", country: "ZA", sector: "Materials", catalyst: "ผู้ผลิตทองคำระดับโลกขยายกำลังการผลิตในหลายทวีป" },
+      { symbol: "QCOM", country: "US", sector: "Semiconductors", catalyst: "ชิปสำหรับสมาร์ทโฟนและ IoT ขยายสู่ตลาดคอมพิวเตอร์ AI PC" },
+      { symbol: "TXN", country: "US", sector: "Semiconductors", catalyst: "ชิป Analog และ Embedded รองรับอุตสาหกรรมยานยนต์และอุตสาหกรรมทั่วไป" },
+      { symbol: "ADI", country: "US", sector: "Semiconductors", catalyst: "เซ็นเซอร์และชิป Analog สำหรับยานยนต์ไฟฟ้าและโรงงานอัตโนมัติ" },
+      { symbol: "KLAC", country: "US", sector: "Semiconductors", catalyst: "เครื่องมือตรวจสอบคุณภาพเวเฟอร์รองรับการผลิตชิปขั้นสูง" },
+      { symbol: "LRCX", country: "US", sector: "Semiconductors", catalyst: "เครื่องจักรกัดและเคลือบเวเฟอร์สำหรับโรงงานผลิตชิป AI" },
+      { symbol: "ON", country: "US", sector: "Semiconductors", catalyst: "ชิปกำลังไฟฟ้าสำหรับยานยนต์ไฟฟ้าและพลังงานหมุนเวียน" },
+      { symbol: "MPWR", country: "US", sector: "Semiconductors", catalyst: "โซลูชันจัดการพลังงานสำหรับ AI Server และยานยนต์" },
+      { symbol: "TER", country: "US", sector: "Semiconductors", catalyst: "เครื่องทดสอบชิปรองรับความต้องการผลิตเซมิคอนดักเตอร์ที่เพิ่มขึ้น" },
+      { symbol: "ENTG", country: "US", sector: "Semiconductors", catalyst: "วัสดุและสารเคมีบริสุทธิ์พิเศษสำหรับการผลิตเซมิคอนดักเตอร์" },
+      { symbol: "ORCL", country: "US", sector: "Software", catalyst: "ฐานข้อมูลองค์กรและ Cloud Infrastructure รองรับปริมาณงาน AI" },
+      { symbol: "CRM", country: "US", sector: "Software", catalyst: "แพลตฟอร์ม CRM และ AI Agentforce ขยายฐานลูกค้าองค์กร" },
+      { symbol: "NOW", country: "US", sector: "Software", catalyst: "แพลตฟอร์ม Workflow Automation ขับเคลื่อนด้วย AI สำหรับองค์กร" },
+      { symbol: "ADBE", country: "US", sector: "Software", catalyst: "ซอฟต์แวร์สร้างสรรค์คอนเทนต์ผสาน Generative AI" },
+      { symbol: "INTU", country: "US", sector: "Software", catalyst: "ซอฟต์แวร์บัญชีและภาษีสำหรับธุรกิจขนาดเล็กขยายฟีเจอร์ AI" },
+      { symbol: "WDAY", country: "US", sector: "Software", catalyst: "ซอฟต์แวร์บริหารทรัพยากรบุคคลและการเงินบน Cloud" },
+      { symbol: "LLY", country: "US", sector: "Healthcare", catalyst: "ยาลดน้ำหนักและเบาหวานกลุ่ม GLP-1 ความต้องการทั่วโลกสูง" },
+      { symbol: "UNH", country: "US", sector: "Healthcare", catalyst: "ธุรกิจประกันสุขภาพและบริการทางการแพทย์ครบวงจรรายใหญ่" },
+      { symbol: "JNJ", country: "US", sector: "Healthcare", catalyst: "กลุ่มยาชีววัตถุและเวชภัณฑ์การแพทย์หลากหลายสายผลิตภัณฑ์" },
+      { symbol: "ABBV", country: "US", sector: "Healthcare", catalyst: "ไปป์ไลน์ยาภูมิคุ้มกันบำบัดทดแทนยา Humira ที่หมดสิทธิบัตร" },
+      { symbol: "MRK", country: "US", sector: "Healthcare", catalyst: "ยารักษามะเร็ง Keytruda และวัคซีนเติบโตต่อเนื่อง" },
+      { symbol: "JPM", country: "US", sector: "Financials", catalyst: "ธนาคารรายใหญ่ที่สุดของสหรัฐฯ กำไรแข็งแกร่งจากทุกกลุ่มธุรกิจ" },
+      { symbol: "BAC", country: "US", sector: "Financials", catalyst: "ธนาคารรายใหญ่ได้ประโยชน์จากอัตราดอกเบี้ยและสินเชื่อผู้บริโภค" },
+      { symbol: "GS", country: "US", sector: "Financials", catalyst: "ธุรกิจวาณิชธนกิจและบริหารสินทรัพย์เติบโตตามตลาดทุน" },
+      { symbol: "MS", country: "US", sector: "Financials", catalyst: "ธุรกิจบริหารความมั่งคั่งและตลาดทุนขยายตัวต่อเนื่อง" },
+      { symbol: "BLK", country: "US", sector: "Financials", catalyst: "ผู้บริหารสินทรัพย์รายใหญ่ที่สุดของโลกขยายกองทุน ETF" },
+      { symbol: "V", country: "US", sector: "Financials", catalyst: "เครือข่ายชำระเงินดิจิทัลรายใหญ่ของโลกเติบโตตามธุรกรรม" },
+      { symbol: "MA", country: "US", sector: "Financials", catalyst: "เครือข่ายชำระเงินอิเล็กทรอนิกส์ขยายตัวตามการใช้จ่ายทั่วโลก" },
+      { symbol: "WMT", country: "US", sector: "Consumer", catalyst: "ค้าปลีกรายใหญ่ที่สุดของสหรัฐฯ ขยายธุรกิจอีคอมเมิร์ซ" },
+      { symbol: "COST", country: "US", sector: "Consumer", catalyst: "ธุรกิจสมาชิกค้าส่งขยายสาขาต่อเนื่องทั่วโลก" },
+      { symbol: "HD", country: "US", sector: "Consumer", catalyst: "ค้าปลีกวัสดุก่อสร้างและซ่อมแซมบ้านรายใหญ่" },
+      { symbol: "MCD", country: "US", sector: "Consumer", catalyst: "เครือร้านฟาสต์ฟู้ดระดับโลกขยายเมนูคุ้มราคา" },
+      { symbol: "CMG", country: "US", sector: "Consumer", catalyst: "เครือร้านอาหารเม็กซิกันขยายสาขาและเมนูใหม่ต่อเนื่อง" },
+      { symbol: "HON", country: "US", sector: "Industrials", catalyst: "กลุ่มธุรกิจอากาศยานและระบบอัตโนมัติอุตสาหกรรม" },
+      { symbol: "GE", country: "US", sector: "Industrials", catalyst: "ธุรกิจเครื่องยนต์อากาศยานฟื้นตัวตามการเดินทางทั่วโลก" },
+      { symbol: "RTX", country: "US", sector: "Industrials", catalyst: "ธุรกิจอากาศยานและกลาโหมได้ประโยชน์จากงบทหารที่เพิ่มขึ้น" },
+      { symbol: "LMT", country: "US", sector: "Industrials", catalyst: "ผู้ผลิตอาวุธและระบบป้องกันประเทศรายใหญ่ของโลก" },
+      { symbol: "XOM", country: "US", sector: "Energy", catalyst: "ผู้ผลิตน้ำมันและก๊าซรายใหญ่ที่สุดของสหรัฐฯ" },
+      { symbol: "CVX", country: "US", sector: "Energy", catalyst: "ธุรกิจน้ำมันครบวงจรได้ประโยชน์จากราคาพลังงาน" },
+      { symbol: "COP", country: "US", sector: "Energy", catalyst: "ผู้ผลิตน้ำมันและก๊าซต้นทุนต่ำขยายแหล่งผลิตใหม่" },
+      { symbol: "LIN", country: "US", sector: "Materials", catalyst: "ก๊าซอุตสาหกรรมรายใหญ่ของโลกรองรับอุตสาหกรรมเซมิคอนดักเตอร์" },
+      { symbol: "PLD", country: "US", sector: "Real Estate", catalyst: "คลังสินค้าและศูนย์กระจายสินค้ารองรับอีคอมเมิร์ซ" },
+      { symbol: "AMT", country: "US", sector: "Real Estate", catalyst: "เสาสัญญาณโทรคมนาคมรองรับการขยายเครือข่าย 5G" },
+      { symbol: "EQIX", country: "US", sector: "Real Estate", catalyst: "ศูนย์ข้อมูลระดับโลกรองรับความต้องการ AI Cloud" },
+      { symbol: "NEE", country: "US", sector: "Utilities", catalyst: "สาธารณูปโภคไฟฟ้าและพลังงานหมุนเวียนรายใหญ่ของสหรัฐฯ" }
+    ];
+
+    // กำหนดการสแกน:
+    // 1. ครบ 10 ตัวก็พอ
+    // 2. Strong Bullish เท่านั้น (Uptrend + Strong Bullish Momentum)
+    // 3. ตั้ง Max Stocks Pool ไว้ที่ 1,000 หุ้น
+    // 4. สแกนจนเจอครบ 10 ตัวแล้วให้หยุดสแกนทันที (Fast Stop)
+    const WEEKLY_PICK_COUNT = 10;
+    const MAX_SCAN_POOL = 1000;
+
+    function isWeeklyPickEligible(cls) {
+      if (!cls) return false;
+      // ยึดเกณฑ์เดิม: ขาขึ้น (Uptrend) และ โมเมนตัมบวกแรงเท่านั้น (Strong Bullish Only!)
+      return cls.trend === "Uptrend" && cls.momentum === "Strong Bullish";
+    }
+
+    function getCapTier(mktCapB) {
+      if (!mktCapB || mktCapB <= 0) return null;
+      if (mktCapB >= 10) return "Large";
+      if (mktCapB >= 2) return "Mid";
+      return "Small";
+    }
+    const CAP_TIER_TH = { Large: "Large Cap", Mid: "Mid Cap", Small: "Small Cap" };
+    const CAP_TIER_STYLE = {
+      Large: "text-blue-300 bg-blue-500/10 border-blue-500/30",
+      Mid: "text-purple-300 bg-purple-500/10 border-purple-500/30",
+      Small: "text-pink-300 bg-pink-500/10 border-pink-500/30",
+    };
+
+    function getWeeklyRotationOrder(weekKeyStr) {
+      const dateObj = weekKeyStr ? new Date(weekKeyStr) : new Date();
+      const weekKey = Math.floor(dateObj.getTime() / (1000 * 60 * 60 * 24 * 7));
+      const pool = TRENDING_UNIVERSE.slice(0, MAX_SCAN_POOL);
+      const poolLen = pool.length;
+      if (poolLen === 0) return [];
+      const start = weekKey % poolLen;
+      return Array.from({ length: poolLen }, (_, i) => pool[(start + i) % poolLen]);
+    }
+
+    function WeeklyRecommendedPanel({ tdKey, fhKey, dataMap, loadSymbol, symbols, onAdd }) {
+      const [loading, setLoading] = useState(false);
+      const [scanProgress, setScanProgress] = useState({ done: 0, total: 0, found: 0 });
+      const dataMapRef = useRef(dataMap);
+      useEffect(() => {
+        dataMapRef.current = dataMap;
+      }, [dataMap]);
+
+      const today = useMemo(() => {
+        const d = new Date();
+        const formattedDate = d.toISOString().slice(0, 10);
+        const dayOfWeek = d.getDay();
+        const diffToMonday = (dayOfWeek + 6) % 7;
+        const monday = new Date(d);
+        monday.setDate(d.getDate() - diffToMonday);
+        const sunday = new Date(monday);
+        sunday.setDate(monday.getDate() + 6);
+        const weekKey = monday.toISOString().slice(0, 10);
+        return {
+          date: formattedDate,
+          weekKey,
+          displayDate: `${monday.toLocaleDateString("th-TH", { day: "numeric", month: "short" })} - ${sunday.toLocaleDateString("th-TH", { day: "numeric", month: "short", year: "numeric" })}`,
+          rotation: getWeeklyRotationOrder(weekKey),
+        };
+      }, []);
+
+      const scanCandidates = useCallback(async () => {
+        if (!tdKey) return;
+        setLoading(true);
+        const rotationPool = today.rotation;
+        setScanProgress({ done: 0, total: rotationPool.length, found: 0 });
+
+        try {
+          let doneCount = 0;
+          let foundCount = 0;
+
+          // ตรวจสอบหุ้นที่มีข้อมูลอยู่ในเครื่องแล้วก่อน
+          for (const item of rotationPool) {
+            const cached = dataMapRef.current[item.symbol];
+            if (cached && cached.series && cached.series.length >= 20) {
+              const cls = classify(cached.series);
+              if (isWeeklyPickEligible(cls)) {
+                foundCount++;
+              }
+            }
+          }
+
+          // หากพบครบ 10 ตัวแล้ว ไม่ต้องสแกนเพิ่ม
+          if (foundCount >= WEEKLY_PICK_COUNT) {
+            setScanProgress({ done: rotationPool.length, total: rotationPool.length, found: foundCount });
+            return;
+          }
+
+          // ไล่สแกนทีละตัว หากพบครบ 10 ตัวที่เข้าเกณฑ์ Strong Bullish + Uptrend ให้หยุดสแกนทันที
+          for (const item of rotationPool) {
+            if (foundCount >= WEEKLY_PICK_COUNT) {
+              console.log(`[Scanner] พบหุ้น Strong Bullish ครบ ${WEEKLY_PICK_COUNT} ตัวแล้ว หยุดการสแกนทันที`);
+              break;
+            }
+
+            const cached = dataMapRef.current[item.symbol];
+            const needsFundamentals = !!fhKey && !cached?.fundamentals;
+            const alreadyFresh = cached && !cached.stale && cached.series && cached.series.length >= 20 && !needsFundamentals;
+
+            if (!alreadyFresh) {
+              await loadSymbol(item.symbol, true);
+            }
+
+            const entry = dataMapRef.current[item.symbol];
+            if (entry && entry.series && entry.series.length >= 20) {
+              const cls = classify(entry.series);
+              if (isWeeklyPickEligible(cls)) {
+                foundCount++;
+              }
+            }
+
+            doneCount++;
+            setScanProgress({ done: doneCount, total: rotationPool.length, found: foundCount });
+          }
+        } finally {
+          setLoading(false);
+        }
+      }, [tdKey, fhKey, today, loadSymbol]);
+
+      useEffect(() => {
+        scanCandidates();
+      }, [today.weekKey, tdKey, fhKey]);
+
+      const recommended = useMemo(() => {
+        const candidates = [];
+        for (const item of today.rotation) {
+          const entry = dataMap[item.symbol];
+          if (!entry || !entry.series || entry.series.length < 20) continue;
+          const cls = classify(entry.series);
+          if (!isWeeklyPickEligible(cls)) continue;
+          const mktCapB = ((pick(entry.fundamentals, ["marketCapitalization"]) || entry.profile?.marketCapitalization || 0) * 1e6) / 1e9;
+          const countryMeta = getCountryMeta(item.country);
+          candidates.push({
+            ...item,
+            cls,
+            mktCapB,
+            capTier: getCapTier(mktCapB),
+            countryMeta,
+            region: countryMeta.region,
+            quote: entry.quote,
+            profile: entry.profile,
+          });
+        }
+
+        // เรียงตามความแข็งแรงของสัญญาณ RSI & Trend Score
+        const strength = (c) => c.cls.trendScore + (c.cls.rsi || 0) / 100;
+        candidates.sort((a, b) => strength(b) - strength(a));
+
+        // กระจายหุ้นให้อยู่หลายภูมิภาค
+        const regionsOrder = [...new Set(candidates.map((c) => c.region))];
+        const picked = [];
+        const usedSymbols = new Set();
+        let guard = 0;
+        while (picked.length < WEEKLY_PICK_COUNT && guard < candidates.length + 1) {
+          let addedThisRound = false;
+          for (const region of regionsOrder) {
+            if (picked.length >= WEEKLY_PICK_COUNT) break;
+            const next = candidates.find((c) => !usedSymbols.has(c.symbol) && c.region === region);
+            if (next) {
+              picked.push(next);
+              usedSymbols.add(next.symbol);
+              addedThisRound = true;
+            }
+          }
+          guard++;
+          if (!addedThisRound) break;
+        }
+        for (const c of candidates) {
+          if (picked.length >= WEEKLY_PICK_COUNT) break;
+          if (!usedSymbols.has(c.symbol)) {
+            picked.push(c);
+            usedSymbols.add(c.symbol);
+          }
+        }
+        return picked.slice(0, WEEKLY_PICK_COUNT);
+      }, [today, dataMap]);
+
+      return (
+        <div className="bg-gradient-to-r from-amber-500/10 via-zinc-900 to-emerald-500/10 border border-amber-500/30 rounded-lg p-4 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="flex items-center gap-2 text-amber-400 font-bold text-base">
+                <Zap className="fill-amber-400" size={18} />
+                <span>หุ้นแนะนำประจำสัปดาห์ 🌐 ทั่วโลก (Strong Bullish Only - {WEEKLY_PICK_COUNT} ตัว)</span>
+              </div>
+              <div className="text-xs text-zinc-400 mt-0.5">
+                เกณฑ์: คัดกรองจากพูลหุ้นสูงสุด <strong className="text-zinc-200">1,000 ตัวทั่วโลก</strong> ครอบคลุม{" "}
+                <strong className="text-zinc-200">Small / Mid / Large Cap</strong> ทุกภูมิภาค โดยยึดเฉพาะหุ้นที่เป็น{" "}
+                <strong className="text-emerald-400">ขาขึ้น (Uptrend)</strong> และ{" "}
+                <strong className="text-emerald-400">โมเมนตัมบวกแรง (Strong Bullish) เท่านั้น</strong> • เมื่อสแกนเจอครบ {WEEKLY_PICK_COUNT} ตัวจะหยุดสแกนทันที • เปลี่ยนชุดสแกนใหม่อัตโนมัติทุกสัปดาห์
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-mono bg-zinc-950 border border-zinc-800 text-amber-400 px-3 py-1 rounded-md font-bold">
+                📅 {today.displayDate}
+              </span>
+              <button
+                onClick={scanCandidates}
+                disabled={loading || !tdKey}
+                className="flex items-center gap-1.5 text-xs bg-zinc-900 border border-zinc-700 text-zinc-200 hover:bg-zinc-800 px-3 py-1 rounded-md font-medium transition disabled:opacity-50"
+              >
+                <RefreshCw size={13} className={loading ? "animate-spin" : ""} />
+                สแกนค้นหาหุ้นแนะนำ
+              </button>
+            </div>
+          </div>
+
+          {!tdKey && (
+            <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-2.5 text-[11px] text-amber-300 flex items-start gap-2">
+              <span>⚠️</span>
+              <span>
+                ต้องตั้งค่า <strong>Twelve Data API Key</strong> ก่อน จึงจะสแกนเพื่อหาหุ้นแนะนำประจำสัปดาห์ได้ — ตั้งค่าได้ที่เมนู ⚙ มุมขวาบน
+              </span>
+            </div>
+          )}
+
+          {loading && (
+            <div className="bg-zinc-950/80 border border-zinc-800 rounded-lg p-3 text-center text-xs text-amber-300 font-mono">
+              ⚡ กำลังสแกนจากพูลหุ้นทั่วโลก... พบแล้ว {scanProgress.found}/{WEEKLY_PICK_COUNT} ตัว (เช็กไปแล้ว {scanProgress.done} ตัว)
+            </div>
+          )}
+
+          {!loading && recommended.length === 0 && (
+            <div className="text-xs text-zinc-500 text-center py-6">
+              {tdKey
+                ? "ยังไม่พบหุ้นที่ตรงเกณฑ์ Uptrend + Strong Bullish ในสัปดาห์นี้"
+                : "กรุณาตั้งค่า Twelve Data API Key เพื่อเริ่มใช้งานหุ้นแนะนำประจำสัปดาห์"}
+            </div>
+          )}
+
+          {recommended.length > 0 && (
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3">
+              {recommended.map((rec, idx) => {
+                const alreadyAdded = symbols.includes(rec.symbol);
+                return (
+                  <div key={rec.symbol} className="bg-zinc-900 border border-zinc-800 hover:border-amber-500/40 rounded-lg p-3 flex flex-col justify-between transition">
+                    <div>
+                      <div className="flex items-start justify-between gap-1.5 mb-2">
+                        <div className="flex items-center gap-2">
+                          <StockLogo symbol={rec.symbol} logoUrl={rec.profile?.logo} size={28} />
+                          <div>
+                            <div className="flex items-center gap-1">
+                              <span title={rec.countryMeta?.name}>{rec.countryMeta?.flag}</span>
+                              <span className="font-mono font-bold text-sm text-zinc-100">{rec.symbol}</span>
+                              <span className="text-[9px] font-bold px-1 py-0.1 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                                #{idx + 1}
+                              </span>
+                            </div>
+                            <div className="text-[10px] text-zinc-400 truncate max-w-[100px]">
+                              {getStockName(rec.symbol, rec.profile?.name)}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {rec.quote && (
+                        <div className="font-mono mb-2">
+                          <span className="text-sm font-bold text-zinc-100">${fmtPrice(+rec.quote.close)}</span>
+                          <span className={`ml-1.5 text-[11px] font-semibold ${+rec.quote.percent_change >= 0 ? "text-emerald-400" : "text-red-400"}`}>
+                            {fmtPct(+rec.quote.percent_change)}
+                          </span>
+                        </div>
+                      )}
+
+                      <div className="mb-1.5 flex flex-wrap gap-1">
+                        <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${TREND_STYLE[rec.cls.trend]}`}>
+                          {TREND_TH[rec.cls.trend]}
+                        </span>
+                        <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${MOM_STYLE[rec.cls.momentum]}`}>
+                          {MOM_TH[rec.cls.momentum]}
+                        </span>
+                        {rec.capTier && (
+                          <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${CAP_TIER_STYLE[rec.capTier]}`}>
+                            {CAP_TIER_TH[rec.capTier]}
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-[9px] text-zinc-500 mb-2">
+                        {rec.countryMeta?.name} ({rec.region}) • RSI {rec.cls.rsi != null ? rec.cls.rsi.toFixed(1) : "—"}
+                        {rec.mktCapB > 0 && <> • Mkt Cap ${rec.mktCapB.toFixed(1)}B</>}
+                      </div>
+
+                      <div className="bg-zinc-950/80 border border-zinc-800/80 rounded p-2 text-[10px] text-zinc-300">
+                        <div className="text-amber-400 font-bold mb-0.5">💡 Catalyst</div>
+                        <div>{rec.catalyst}</div>
+                      </div>
+                    </div>
+
+                    <div className="pt-2 mt-2 border-t border-zinc-800">
+                      <button
+                        onClick={() => onAdd(rec.symbol)}
+                        disabled={alreadyAdded}
+                        className="w-full py-1 bg-blue-600/20 hover:bg-blue-600/30 disabled:opacity-50 disabled:cursor-not-allowed text-blue-400 border border-blue-500/30 rounded text-[11px] font-semibold flex items-center justify-center gap-1 transition"
+                      >
+                        {alreadyAdded ? "อยู่ใน Watchlist แล้ว" : (<><Plus size={12} /> เพิ่มเข้า Watchlist</>)}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    /* ============================================================
+       PRICE CHART
+       ============================================================ */
+    function PriceChart({ series, support, resistance, timeframe = "1week" }) {
+      const tfObj = TIMEFRAMES.find((t) => t.id === timeframe) || TIMEFRAMES[1];
+
+      const data = useMemo(() => {
+        const closes = series.map((b) => b.close);
+        const e200Arr = ema(closes, 200);
+
+        return series.slice(-90).map((b, idx) => {
+          const originalIdx = series.length - 90 + idx;
+          return {
+            date: b.date.slice(0, 16),
+            close: b.close,
+            ema200: e200Arr[originalIdx],
+          };
+        });
+      }, [series]);
+
+      const levels = [
+        ...support.map((s) => s.price),
+        ...resistance.map((r) => r.price),
+        ...data.map((d) => d.close),
+        ...data.map((d) => d.ema200).filter(Boolean)
+      ];
+      const min = Math.min(...levels) * 0.985;
+      const max = Math.max(...levels) * 1.015;
+
+      return (
+        <ResponsiveContainer width="100%" height={230}>
+          <ComposedChart data={data} margin={{ top: 6, right: 52, left: 0, bottom: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#27272a" vertical={false} />
+            <XAxis dataKey="date" tick={{ fill: "#71717a", fontSize: 10 }} axisLine={{ stroke: "#3f3f46" }} tickLine={false} minTickGap={28} />
+            <YAxis domain={[min, max]} tick={{ fill: "#71717a", fontSize: 10 }} axisLine={false} tickLine={false} width={46} tickFormatter={(v) => v.toFixed(0)} />
+            <Tooltip
+              contentStyle={{ background: "#18181b", border: "1px solid #3f3f46", borderRadius: 6, fontSize: 12 }}
+              labelStyle={{ color: "#a1a1aa" }}
+              formatter={(v, name) => [`$${v ? v.toFixed(2) : "—"}`, name === "close" ? `ราคาปิด (${tfObj.label})` : name]}
+            />
+            {resistance.map((r, i) => (
+              <ReferenceLine key={`r${i}`} y={r.price} stroke="#f87171" strokeDasharray="4 3" strokeOpacity={0.9 - i * 0.2}
+                label={{ value: `R${i + 1} ${r.price.toFixed(2)} (${r.touches}x)`, position: "right", fill: "#f87171", fontSize: 10 }} />
+            ))}
+            {support.map((s, i) => (
+              <ReferenceLine key={`s${i}`} y={s.price} stroke="#34d399" strokeDasharray="4 3" strokeOpacity={0.9 - i * 0.2}
+                label={{ value: `S${i + 1} ${s.price.toFixed(2)} (${s.touches}x)`, position: "right", fill: "#34d399", fontSize: 10 }} />
+            ))}
+            <Line type="monotone" dataKey="close" stroke="#60a5fa" strokeWidth={1.75} dot={false} isAnimationActive={false} name="close" />
+            <Line type="monotone" dataKey="ema200" stroke="#a855f7" strokeWidth={1.5} strokeDasharray="3 3" dot={false} isAnimationActive={false} name="EMA200" />
+          </ComposedChart>
+        </ResponsiveContainer>
+      );
+    }
+
+    /* ============================================================
+       MULTI-PORTFOLIO VIEW
+       ============================================================ */
+    function PortfolioView({ tdKey, dataMap, loadSymbol }) {
+      const [portfolios, setPortfolios] = useState([]);
+      const [activePortId, setActivePortId] = useState("");
+      const [newPortName, setNewPortName] = useState("");
+      const [showNewPortInput, setShowNewPortInput] = useState(false);
+
+      const [actionType, setActionType] = useState("BUY");
+      const [symbol, setSymbol] = useState("");
+      const [shares, setShares] = useState("");
+      const [costPrice, setCostPrice] = useState("");
+      const [targetPctInput, setTargetPctInput] = useState("");
+      const [loadingQuotes, setLoadingQuotes] = useState(false);
+
+      const [sortField, setSortField] = useState("currVal");
+      const [sortAsc, setSortAsc] = useState(false);
+      const [expandedSymbol, setExpandedSymbol] = useState(null);
+
+      useEffect(() => {
+        (async () => {
+          let ports = await loadStore("us-dash-portfolios-v3", null);
+          if (!ports || ports.length === 0) {
+            const legacy = await loadStore("us-dash-portfolio-v2", []);
+            ports = [
+              {
+                id: "port-" + Date.now(),
+                name: "พอร์ตหลัก (Main Portfolio)",
+                items: Array.isArray(legacy) ? legacy : []
+              }
+            ];
+            saveStore("us-dash-portfolios-v3", ports);
+          }
+          setPortfolios(ports);
+          if (ports.length > 0) {
+            setActivePortId(ports[0].id);
+          }
+        })();
+      }, []);
+
+      const savePortfolios = (updated) => {
+        setPortfolios(updated);
+        saveStore("us-dash-portfolios-v3", updated);
+      };
+
+      const activePort = useMemo(() => {
+        return portfolios.find((p) => p.id === activePortId) || portfolios[0] || { id: "def", name: "Default", items: [] };
+      }, [portfolios, activePortId]);
+
+      const portfolio = activePort.items || [];
+
+      const updateActiveItems = (updatedItems) => {
+        const updatedPorts = portfolios.map((p) => {
+          if (p.id === activePort.id) {
+            return { ...p, items: updatedItems };
+          }
+          return p;
+        });
+        savePortfolios(updatedPorts);
+      };
+
+      const handleCreatePortfolio = (e) => {
+        e.preventDefault();
+        const name = newPortName.trim();
+        if (!name) return;
+
+        const newPort = {
+          id: "port-" + Date.now(),
+          name,
+          items: []
+        };
+        const updated = [...portfolios, newPort];
+        savePortfolios(updated);
+        setActivePortId(newPort.id);
+        setNewPortName("");
+        setShowNewPortInput(false);
+      };
+
+      const handleDeletePortfolio = (portId) => {
+        if (portfolios.length <= 1) {
+          alert("ไม่สามารถลบพอร์ตทั้งหมดได้ ต้องมีอย่างน้อย 1 พอร์ตในระบบ");
+          return;
+        }
+        const target = portfolios.find((p) => p.id === portId);
+        if (confirm(`คุณต้องการลบพอร์ต "${target?.name}" ออกใช่หรือไม่?`)) {
+          const updated = portfolios.filter((p) => p.id !== portId);
+          savePortfolios(updated);
+          if (activePortId === portId) {
+            setActivePortId(updated[0].id);
+          }
+        }
+      };
+
+      const refreshPortfolioQuotes = useCallback(async () => {
+        if (!tdKey) return;
+        const allSymbols = [...new Set(portfolios.flatMap((p) => (p.items || []).map((item) => item.symbol)))];
+        if (allSymbols.length === 0) return;
+
+        setLoadingQuotes(true);
+        await Promise.all(allSymbols.map((s) => loadSymbol(s, false)));
+        setLoadingQuotes(false);
+      }, [portfolios, tdKey, loadSymbol]);
+
+      useEffect(() => {
+        if (portfolios.length > 0 && tdKey) {
+          refreshPortfolioQuotes();
+        }
+      }, [portfolios.length, tdKey]);
+
+      const handleTransaction = (e) => {
+        e.preventDefault();
+        const s = symbol.trim().toUpperCase();
+        const numShares = parseFloat(shares);
+        const price = parseFloat(costPrice);
+        const targetPct = parseFloat(targetPctInput);
+
+        if (!s || isNaN(numShares) || numShares <= 0) {
+          alert("กรุณากรอก Symbol และจำนวนหุ้นให้ถูกต้อง");
+          return;
+        }
+
+        const existingIndex = portfolio.findIndex((item) => item.symbol === s);
+
+        if (actionType === "BUY") {
+          if (isNaN(price) || price <= 0) {
+            alert("กรุณากรอกราคาต้นทุนซื้อให้ถูกต้อง");
+            return;
+          }
+
+          let updated = [...portfolio];
+          if (existingIndex >= 0) {
+            const existing = updated[existingIndex];
+            const oldTotalCost = existing.shares * existing.avgCost;
+            const newBuyCost = numShares * price;
+            const newTotalShares = existing.shares + numShares;
+            const newAvgCost = (oldTotalCost + newBuyCost) / newTotalShares;
+
+            updated[existingIndex] = {
+              ...existing,
+              shares: newTotalShares,
+              avgCost: newAvgCost,
+              targetPct: !isNaN(targetPct) && targetPct >= 0 ? targetPct : (existing.targetPct || 0)
+            };
+          } else {
+            updated.push({
+              symbol: s,
+              shares: numShares,
+              avgCost: price,
+              targetPct: !isNaN(targetPct) && targetPct >= 0 ? targetPct : 0
+            });
+          }
+          updateActiveItems(updated);
+          if (tdKey) loadSymbol(s, false);
+
+        } else if (actionType === "TRIM") {
+          if (existingIndex < 0) {
+            alert(`ไม่พบหุ้น ${s} ในพอร์ต "${activePort.name}"`);
+            return;
+          }
+          const existing = portfolio[existingIndex];
+          if (numShares > existing.shares) {
+            alert(`จำนวนหุ้นที่ต้องการขาย (${numShares}) มากกว่าหุ้นที่มีอยู่ (${existing.shares})`);
+            return;
+          }
+
+          let updated = [...portfolio];
+          if (Math.abs(numShares - existing.shares) < 1e-6) {
+            updated.splice(existingIndex, 1);
+          } else {
+            updated[existingIndex] = {
+              ...existing,
+              shares: existing.shares - numShares
+            };
+          }
+          updateActiveItems(updated);
+        }
+
+        setSymbol("");
+        setShares("");
+        setCostPrice("");
+        setTargetPctInput("");
+      };
+
+      const updateTargetPct = (sym, newPct) => {
+        const val = parseFloat(newPct);
+        const updated = portfolio.map((item) => {
+          if (item.symbol === sym) {
+            return { ...item, targetPct: !isNaN(val) && val >= 0 ? val : 0 };
+          }
+          return item;
+        });
+        updateActiveItems(updated);
+      };
+
+      const deletePosition = (sym) => {
+        if (confirm(`คุณต้องการลบหุ้น ${sym} ออกจากพอร์ต "${activePort.name}" ใช่หรือไม่?`)) {
+          const updated = portfolio.filter((item) => item.symbol !== sym);
+          updateActiveItems(updated);
+        }
+      };
+
+      const quickAction = (sym, type) => {
+        setSymbol(sym);
+        setActionType(type);
+        const existing = portfolio.find((p) => p.symbol === sym);
+        if (existing && existing.targetPct != null) {
+          setTargetPctInput(existing.targetPct.toString());
+        }
+        if (type === "BUY") {
+          const currQuote = dataMap[sym]?.quote?.close;
+          if (currQuote) setCostPrice(currQuote.toString());
+        }
+      };
+
+      const totalPortfolioVal = useMemo(() => {
+        return portfolio.reduce((acc, item) => {
+          const quote = dataMap[item.symbol]?.quote;
+          const currPrice = quote?.close ? parseFloat(quote.close) : null;
+          const currVal = currPrice != null ? item.shares * currPrice : item.shares * item.avgCost;
+          return acc + currVal;
+        }, 0);
+      }, [portfolio, dataMap]);
+
+      const processedPortfolio = useMemo(() => {
+        return portfolio.map((item) => {
+          const quote = dataMap[item.symbol]?.quote;
+          const currPrice = quote?.close ? parseFloat(quote.close) : null;
+          const totalCost = item.shares * item.avgCost;
+          const currVal = currPrice != null ? item.shares * currPrice : totalCost;
+          const pl = currPrice != null ? currVal - totalCost : 0;
+          const plPct = currPrice != null && totalCost > 0 ? (pl / totalCost) * 100 : 0;
+
+          const targetPct = item.targetPct != null ? parseFloat(item.targetPct) : 0;
+          const actualPct = totalPortfolioVal > 0 ? (currVal / totalPortfolioVal) * 100 : 0;
+          const maxAllowedVal = totalPortfolioVal * (targetPct / 100);
+          const excessVal = maxAllowedVal > 0 ? currVal - maxAllowedVal : 0;
+          const excessPct = actualPct - targetPct;
+          const isOver = targetPct > 0 && excessVal > 0.01;
+
+          return {
+            ...item,
+            currPrice,
+            totalCost,
+            currVal,
+            pl,
+            plPct,
+            targetPct,
+            actualPct,
+            maxAllowedVal,
+            excessVal,
+            excessPct,
+            isOver
+          };
+        });
+      }, [portfolio, dataMap, totalPortfolioVal]);
+
+      const sortedPortfolio = useMemo(() => {
+        return [...processedPortfolio].sort((a, b) => {
+          let valA = a[sortField];
+          let valB = b[sortField];
+
+          if (typeof valA === "string") {
+            return sortAsc ? valA.localeCompare(valB) : valB.localeCompare(valA);
+          }
+          return sortAsc ? (valA ?? 0) - (valB ?? 0) : (valB ?? 0) - (valA ?? 0);
+        });
+      }, [processedPortfolio, sortField, sortAsc]);
+
+      const handleSort = (field) => {
+        if (sortField === field) {
+          setSortAsc(!sortAsc);
+        } else {
+          setSortField(field);
+          setSortAsc(false);
+        }
+      };
+
+      const summary = useMemo(() => {
+        let totalCost = 0;
+        let totalCurrentVal = 0;
+        let totalTargetPctAllocated = 0;
+        let totalOverAllocatedCount = 0;
+
+        processedPortfolio.forEach((item) => {
+          totalCost += item.totalCost;
+          totalCurrentVal += item.currVal;
+          totalTargetPctAllocated += item.targetPct;
+          if (item.isOver) totalOverAllocatedCount++;
+        });
+
+        const totalPL = totalCurrentVal - totalCost;
+        const totalPLPct = totalCost > 0 ? (totalPL / totalCost) * 100 : 0;
+
+        return { totalCost, totalCurrentVal, totalPL, totalPLPct, totalTargetPctAllocated, totalOverAllocatedCount };
+      }, [processedPortfolio]);
+
+      return (
+        <div className="space-y-4">
+          <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-3 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-xs font-semibold text-zinc-300 flex items-center gap-1.5 mr-1">
+                <Briefcase className="text-blue-400" size={16} /> เลือกพอร์ตลงทุน:
+              </span>
+              <div className="flex items-center gap-1.5 flex-wrap">
+                {portfolios.map((p) => (
+                  <button
+                    key={p.id}
+                    onClick={() => setActivePortId(p.id)}
+                    className={`px-3 py-1.5 rounded-md text-xs font-medium transition flex items-center gap-2 ${
+                      p.id === activePort.id
+                        ? "bg-blue-600 text-white font-bold shadow-sm"
+                        : "bg-zinc-950 text-zinc-400 hover:text-zinc-200 border border-zinc-800"
+                    }`}
+                  >
+                    <span>{p.name}</span>
+                    <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-zinc-900/60 text-zinc-300">
+                      {p.items?.length || 0}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              {!showNewPortInput ? (
+                <button
+                  onClick={() => setShowNewPortInput(true)}
+                  className="flex items-center gap-1 px-3 py-1.5 rounded bg-emerald-600/20 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-600/30 text-xs font-medium transition"
+                >
+                  <Plus size={14} /> สร้างพอร์ตใหม่
+                </button>
+              ) : (
+                <form onSubmit={handleCreatePortfolio} className="flex items-center gap-1.5">
+                  <input
+                    type="text"
+                    placeholder="ชื่อพอร์ต เช่น พอร์ตเกษียณ"
+                    value={newPortName}
+                    onChange={(e) => setNewPortName(e.target.value)}
+                    className="bg-zinc-950 border border-emerald-500/50 rounded px-2.5 py-1 text-xs text-zinc-100 font-mono w-44 focus:outline-none"
+                    autoFocus
+                  />
+                  <button
+                    type="submit"
+                    className="px-2.5 py-1 rounded bg-emerald-600 text-white text-xs font-medium hover:bg-emerald-500"
+                  >
+                    สร้าง
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setShowNewPortInput(false); setNewPortName(""); }}
+                    className="px-2 py-1 rounded bg-zinc-800 text-zinc-400 text-xs hover:text-zinc-200"
+                  >
+                    ยกเลิก
+                  </button>
+                </form>
+              )}
+
+              {portfolios.length > 1 && (
+                <button
+                  onClick={() => handleDeletePortfolio(activePort.id)}
+                  className="flex items-center gap-1 px-2.5 py-1.5 rounded bg-red-500/10 text-red-400 border border-red-500/30 hover:bg-red-500/20 text-xs transition"
+                  title="ลบพอร์ตปัจจุบัน"
+                >
+                  <Trash2 size={13} /> ลบพอร์ต
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-4">
+            <div className="text-sm font-semibold text-zinc-100 flex items-center justify-between mb-3">
+              <span className="flex items-center gap-2">
+                <span>⚡</span>
+                จัดการหุ้นใน <span className="text-blue-400">"{activePort.name}"</span>
+              </span>
+              <button
+                onClick={refreshPortfolioQuotes}
+                disabled={loadingQuotes}
+                className="flex items-center gap-1.5 text-xs text-blue-400 hover:text-blue-300 disabled:opacity-50"
+              >
+                <RefreshCw size={13} className={loadingQuotes ? "animate-spin" : ""} />
+                อัปเดตราคาราคาเรียลไทม์ (Twelve Data)
+              </button>
+            </div>
+
+            <form onSubmit={handleTransaction} className="space-y-3">
+              <div className="flex items-center gap-2 mb-2">
+                <button
+                  type="button"
+                  onClick={() => setActionType("BUY")}
+                  className={`px-3 py-1 text-xs rounded font-medium border ${actionType === "BUY" ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/50" : "bg-zinc-950 text-zinc-400 border-zinc-800"}`}
+                >
+                  <Plus size={12} className="inline mr-1" /> ซื้อเพิ่ม / บันทึกหุ้น (Buy)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActionType("TRIM")}
+                  className={`px-3 py-1 text-xs rounded font-medium border ${actionType === "TRIM" ? "bg-amber-500/20 text-amber-300 border-amber-500/50" : "bg-zinc-950 text-zinc-400 border-zinc-800"}`}
+                >
+                  <MinusCircle size={12} className="inline mr-1" /> ขายบางส่วน (Trim/Sell)
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-5 gap-3 items-end">
+                <div>
+                  <label className="text-[11px] text-zinc-400 block mb-1">ชื่อหุ้น (Symbol)</label>
+                  <input
+                    type="text"
+                    placeholder="เช่น NVDA"
+                    value={symbol}
+                    onChange={(e) => setSymbol(e.target.value)}
+                    className="w-full bg-zinc-950 border border-zinc-800 rounded px-3 py-1.5 text-xs font-mono text-zinc-100 uppercase"
+                  />
+                </div>
+                <div>
+                  <label className="text-[11px] text-zinc-400 block mb-1">
+                    {actionType === "BUY" ? "จำนวนหุ้นซื้อเพิ่ม" : "จำนวนหุ้นขาย"}
+                  </label>
+                  <input
+                    type="number"
+                    step="any"
+                    placeholder="เช่น 10 หรือ 0.52"
+                    value={shares}
+                    onChange={(e) => setShares(e.target.value)}
+                    className="w-full bg-zinc-950 border border-zinc-800 rounded px-3 py-1.5 text-xs font-mono text-zinc-100"
+                  />
+                </div>
+                {actionType === "BUY" && (
+                  <>
+                    <div>
+                      <label className="text-[11px] text-zinc-400 block mb-1">ราคาซื้อต่อหุ้น ($)</label>
+                      <input
+                        type="number"
+                        step="any"
+                        placeholder="เช่น 120.50"
+                        value={costPrice}
+                        onChange={(e) => setCostPrice(e.target.value)}
+                        className="w-full bg-zinc-950 border border-zinc-800 rounded px-3 py-1.5 text-xs font-mono text-zinc-100"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[11px] text-zinc-400 block mb-1">ล็อกสัดส่วนเป้าหมาย (% พอร์ตนี้)</label>
+                      <input
+                        type="number"
+                        step="any"
+                        placeholder="เช่น 50"
+                        value={targetPctInput}
+                        onChange={(e) => setTargetPctInput(e.target.value)}
+                        className="w-full bg-zinc-950 border border-zinc-800 rounded px-3 py-1.5 text-xs font-mono text-blue-400 font-bold"
+                      />
+                    </div>
+                  </>
+                )}
+                <div className={actionType === "TRIM" ? "sm:col-span-3" : ""}>
+                  <button
+                    type="submit"
+                    className={`w-full flex items-center justify-center gap-1.5 px-4 py-1.5 rounded font-medium text-xs text-white transition ${actionType === "BUY" ? "bg-emerald-600 hover:bg-emerald-500" : "bg-amber-600 hover:bg-amber-500"}`}
+                  >
+                    {actionType === "BUY" ? <Plus size={14} /> : <MinusCircle size={14} />}
+                    {actionType === "BUY" ? `เพิ่มเข้าพอร์ต ${activePort.name}` : "ตัดขาย (Trim)"}
+                  </button>
+                </div>
+              </div>
+            </form>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-3">
+              <div className="text-[11px] text-zinc-500">ต้นทุนรวม ({activePort.name})</div>
+              <div className="text-base font-mono font-bold text-zinc-100 mt-1">${fmtPrice(summary.totalCost)}</div>
+            </div>
+            <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-3">
+              <div className="text-[11px] text-zinc-500">มูลค่าปัจจุบันรวม</div>
+              <div className="text-base font-mono font-bold text-zinc-100 mt-1">${fmtPrice(summary.totalCurrentVal)}</div>
+            </div>
+            <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-3">
+              <div className="text-[11px] text-zinc-500">กำไร/ขาดทุน รวม ($)</div>
+              <div className={`text-base font-mono font-bold mt-1 ${summary.totalPL >= 0 ? "text-emerald-400" : "text-red-400"}`}>
+                {summary.totalPL >= 0 ? "+" : ""}${fmtPrice(summary.totalPL)}
+              </div>
+            </div>
+            <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-3">
+              <div className="text-[11px] text-zinc-500">สถานะล็อกสัดส่วนพอร์ตนี้</div>
+              <div className="text-sm font-mono font-bold mt-1">
+                {summary.totalOverAllocatedCount > 0 ? (
+                  <span className="text-red-400 flex items-center gap-1">
+                    <AlertTriangle size={14} /> เกินโควตา {summary.totalOverAllocatedCount} รายการ
+                  </span>
+                ) : (
+                  <span className="text-emerald-400">✓ สัดส่วนสมดุลดี</span>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {summary.totalCurrentVal > 0 && (
+            <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-3">
+              <div className="text-xs text-zinc-400 mb-2 font-medium flex justify-between items-center">
+                <span>📊 สัดส่วนถือครองของพอร์ต "{activePort.name}"</span>
+                <span className="text-[11px] font-mono text-zinc-500">
+                  เป้าหมายรวม: {summary.totalTargetPctAllocated.toFixed(1)}% / 100%
+                </span>
+              </div>
+              <div className="h-3.5 w-full bg-zinc-950 rounded-full overflow-hidden flex border border-zinc-800">
+                {processedPortfolio.map((item, idx) => {
+                  if (item.actualPct <= 0) return null;
+                  const colors = [
+                    "bg-blue-500", "bg-emerald-500", "bg-purple-500", "bg-amber-500", 
+                    "bg-indigo-500", "bg-rose-500", "bg-cyan-500", "bg-teal-500"
+                  ];
+                  return (
+                    <div
+                      key={item.symbol}
+                      style={{ width: `${item.actualPct}%` }}
+                      className={`${item.isOver ? "bg-red-500" : colors[idx % colors.length]} h-full transition-all border-r border-zinc-950`}
+                      title={`${item.symbol}: ปัจจุบัน ${item.actualPct.toFixed(1)}% | เป้าหมาย ${item.targetPct}% ${item.isOver ? `(เกิน $${fmtPrice(item.excessVal)})` : ""}`}
+                    />
+                  );
+                })}
+              </div>
+              <div className="flex flex-wrap gap-2 mt-2.5 text-[11px] font-mono">
+                {processedPortfolio.map((item) => (
+                  <div key={item.symbol} className="flex items-center gap-1.5 bg-zinc-950 px-2 py-1 rounded border border-zinc-800">
+                    <StockLogo symbol={item.symbol} logoUrl={dataMap[item.symbol]?.profile?.logo} size={16} />
+                    <span className="font-bold text-zinc-200">{item.symbol}:</span>
+                    <span className={item.isOver ? "text-red-400 font-bold" : "text-zinc-400"}>
+                      {item.actualPct.toFixed(1)}% {item.targetPct > 0 ? `(เป้า ${item.targetPct}%)` : ""}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-4 overflow-x-auto">
+            <div className="text-sm font-semibold text-zinc-200 mb-3 flex items-center justify-between">
+              <span>📋 รายชื่อหุ้นในพอร์ต "{activePort.name}" ({portfolio.length} รายการ)</span>
+              <span className="text-[11px] text-zinc-500 font-normal">แก้ไข % เป้าหมายในตารางเพื่อคำนวณโควตาใหม่ได้ทันที</span>
+            </div>
+
+            {portfolio.length === 0 ? (
+              <div className="text-center text-zinc-500 py-8 text-xs">
+                ยังไม่มีรายการหุ้นในพอร์ต "{activePort.name}" กรอกข้อมูลด้านบนเพื่อเริ่มบันทึกหุ้นเข้าพอร์ตนี้
+              </div>
+            ) : (
+              <table className="w-full text-left text-xs font-mono">
+                <thead>
+                  <tr className="border-b border-zinc-800 text-zinc-400">
+                    <th className="pb-2 cursor-pointer hover:text-zinc-200 select-none" onClick={() => handleSort('symbol')}>
+                      ชื่อหุ้น {sortField === 'symbol' ? (sortAsc ? '▲' : '▼') : ''}
+                    </th>
+                    <th className="pb-2 text-right cursor-pointer hover:text-zinc-200 select-none" onClick={() => handleSort('currVal')}>
+                      มูลค่า {sortField === 'currVal' ? (sortAsc ? '▲' : '▼') : ''}
+                    </th>
+                    <th className="pb-2 text-right cursor-pointer hover:text-zinc-200 select-none" onClick={() => handleSort('shares')}>
+                      จำนวนหุ้น {sortField === 'shares' ? (sortAsc ? '▲' : '▼') : ''}
+                    </th>
+                    <th className="pb-2 text-right cursor-pointer hover:text-zinc-200 select-none" onClick={() => handleSort('pl')}>
+                      กำไร/ขาดทุน {sortField === 'pl' ? (sortAsc ? '▲' : '▼') : ''}
+                    </th>
+                    <th className="pb-2 text-right cursor-pointer hover:text-zinc-200 select-none" onClick={() => handleSort('currPrice')}>
+                      ราคาล่าสุด/ต้นทุน {sortField === 'currPrice' ? (sortAsc ? '▲' : '▼') : ''}
+                    </th>
+                    <th className="pb-2 text-center">จัดการ</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-zinc-800/60">
+                  {sortedPortfolio.map((item) => {
+                    const isExpanded = expandedSymbol === item.symbol;
+                    return (
+                    <React.Fragment key={item.symbol}>
+                    <tr className={`hover:bg-zinc-800/40 transition ${item.isOver ? "bg-red-500/5" : ""}`}>
+                      <td className="py-2.5">
+                        <div className="flex items-center gap-2.5">
+                          <StockLogo symbol={item.symbol} logoUrl={dataMap[item.symbol]?.profile?.logo} size={28} />
+                          <div className="min-w-0">
+                            <div className="font-bold text-zinc-100 flex items-center gap-1.5 font-mono">
+                              {item.symbol}
+                            </div>
+                            <div className="text-[10px] text-zinc-400 truncate max-w-[140px] sm:max-w-[200px] font-sans">
+                              {getStockName(item.symbol, dataMap[item.symbol]?.profile?.name)}
+                            </div>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="py-2.5 text-right font-bold text-zinc-100">${fmtPrice(item.currVal)}</td>
+                      <td className="py-2.5 text-right text-zinc-200 font-semibold">{item.shares}</td>
+                      <td className="py-2.5 text-right">
+                        <div className={`font-bold ${item.pl >= 0 ? "text-emerald-400" : "text-red-400"}`}>
+                          {item.pl >= 0 ? "+" : ""}${fmtPrice(item.pl)}
+                        </div>
+                        <div className={`text-[10px] ${item.pl >= 0 ? "text-emerald-400" : "text-red-400"}`}>
+                          {fmtPct(item.plPct)}
+                        </div>
+                      </td>
+                      <td className="py-2.5 text-right">
+                        <div className="font-bold text-zinc-100">
+                          {item.currPrice != null ? `$${fmtPrice(item.currPrice)}` : <span className="text-zinc-500">กำลังโหลด...</span>}
+                        </div>
+                        <div className="text-[10px] text-zinc-500">ต้นทุน ${fmtPrice(item.avgCost)}</div>
+                      </td>
+                      <td className="py-2.5 text-center">
+                        <button
+                          onClick={() => setExpandedSymbol(isExpanded ? null : item.symbol)}
+                          className={`px-2.5 py-1 rounded border text-[11px] font-medium inline-flex items-center gap-1 transition ${
+                            isExpanded
+                              ? "bg-blue-500/20 border-blue-500/50 text-blue-300"
+                              : "bg-zinc-950 border-zinc-700 text-zinc-300 hover:bg-zinc-800"
+                          } ${item.isOver ? "ring-1 ring-red-500/50" : ""}`}
+                        >
+                          จัดการ {item.isOver && <AlertTriangle size={11} className="text-red-400" />} {isExpanded ? "▲" : "▼"}
+                        </button>
+                      </td>
+                    </tr>
+                    {isExpanded && (
+                      <tr className="bg-zinc-950/60">
+                        <td colSpan={6} className="py-3 px-2">
+                          <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-3 space-y-3">
+                            <div className="flex flex-wrap items-center gap-4">
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-[11px] text-zinc-500">สัดส่วน (%เป้า / %จริง):</span>
+                                <input
+                                  type="number"
+                                  step="any"
+                                  value={item.targetPct}
+                                  onChange={(e) => updateTargetPct(item.symbol, e.target.value)}
+                                  className="w-12 bg-zinc-950 border border-zinc-700 rounded px-1 py-0.5 text-center text-xs font-bold text-blue-400"
+                                />
+                                <span className="text-zinc-500">% /</span>
+                                <span className={`font-bold ${item.isOver ? "text-red-400" : "text-zinc-200"}`}>
+                                  {item.actualPct.toFixed(1)}%
+                                </span>
+                              </div>
+
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-[11px] text-zinc-500">โควตาซื้อได้:</span>
+                                {item.targetPct > 0 ? (
+                                  <span className="text-zinc-200 font-bold">${fmtPrice(item.maxAllowedVal)}</span>
+                                ) : (
+                                  <span className="text-zinc-500">ไม่ได้ล็อก</span>
+                                )}
+                              </div>
+
+                              <div>
+                                {item.targetPct > 0 ? (
+                                  item.isOver ? (
+                                    <div className="inline-block px-2 py-0.5 rounded bg-red-500/20 border border-red-500/40 text-red-300 font-bold text-[11px]">
+                                      🚨 เกินสัดส่วน +${fmtPrice(item.excessVal)} (+{item.excessPct.toFixed(1)}%)
+                                    </div>
+                                  ) : (
+                                    <div className="inline-block px-2 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-[11px]">
+                                      ✓ ซื้อได้อีก ${fmtPrice(Math.abs(item.currVal - item.maxAllowedVal))}
+                                    </div>
+                                  )
+                                ) : (
+                                  <span className="text-zinc-600 text-[11px]">— ยังไม่ได้ตั้งเป้าหมาย —</span>
+                                )}
+                              </div>
+                            </div>
+
+                            <div className="flex items-center gap-2 pt-1 border-t border-zinc-800">
+                              <button
+                                onClick={() => quickAction(item.symbol, "BUY")}
+                                className="px-2.5 py-1 rounded bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 text-[11px] font-medium"
+                              >
+                                <Plus size={12} className="inline mr-1" />ซื้อเพิ่ม
+                              </button>
+                              <button
+                                onClick={() => quickAction(item.symbol, "TRIM")}
+                                className="px-2.5 py-1 rounded bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 text-[11px] font-medium"
+                              >
+                                <MinusCircle size={12} className="inline mr-1" />ตัดขาย (Trim)
+                              </button>
+                              <button
+                                onClick={() => deletePosition(item.symbol)}
+                                className="px-2.5 py-1 rounded hover:bg-zinc-800 text-zinc-500 hover:text-red-400 text-[11px] font-medium ml-auto flex items-center gap-1"
+                              >
+                                <Trash2 size={13} /> ลบออก
+                              </button>
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                    </React.Fragment>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    /* ============================================================
+       WATCHLIST POSITION & PROFIT CALCULATOR
+       ============================================================ */
+    function WatchlistCalculator({ currentPrice, support = [], resistance = [] }) {
+      const [showCalc, setShowCalc] = useState(false);
+      const [capital, setCapital] = useState(1000);
+      const [entryPrice, setEntryPrice] = useState("");
+      const [stopLoss, setStopLoss] = useState("");
+
+      useEffect(() => {
+        const s1 = support.length > 0 ? support[0].price : currentPrice;
+        const s2 = support.length > 1 ? support[1].price : (s1 ? s1 * 0.95 : 0);
+
+        if (s1) setEntryPrice(s1.toFixed(2));
+        if (s2) setStopLoss(s2.toFixed(2));
+      }, [support, currentPrice]);
+
+      const cap = parseFloat(capital) || 0;
+      const entry = parseFloat(entryPrice) || 0;
+      const sl = parseFloat(stopLoss) || 0;
+
+      const shares = entry > 0 ? cap / entry : 0;
+      const maxLoss = entry > 0 && sl > 0 ? cap - (shares * sl) : 0;
+      const riskAmount = entry - sl;
+
+      const targets = useMemo(() => {
+        const base = entry > 0 ? entry : currentPrice;
+        return [0, 1, 2].map((i) => {
+          const r = resistance[i];
+          const price = r ? r.price : (base ? base * (1 + 0.1 * (i + 1)) : 0);
+          const totalVal = shares * price;
+          const profit = totalVal - cap;
+          const profitPct = entry > 0 ? ((price - entry) / entry) * 100 : 0;
+          const rewardAmount = price - entry;
+          const rr = riskAmount > 0 && rewardAmount > 0 ? (rewardAmount / riskAmount).toFixed(2) : null;
+          return {
+            key: `R${i + 1}`,
+            price,
+            touches: r ? r.touches : null,
+            isEstimate: !r,
+            totalVal,
+            profit,
+            profitPct,
+            rr,
+          };
+        });
+      }, [resistance, entry, currentPrice, shares, cap, riskAmount]);
+
+      return (
+        <div className="mt-3">
+          <button
+            type="button"
+            onClick={() => setShowCalc((v) => !v)}
+            className="w-full flex items-center justify-between bg-zinc-950/80 border border-zinc-800 hover:border-zinc-700 hover:bg-zinc-900/60 rounded-lg px-3 py-2 transition-colors"
+          >
+            <span className="text-xs font-semibold text-zinc-200 flex items-center gap-1.5">
+              <span>🧮</span> เครื่องมือคำนวณกำไร & Risk/Reward (Position Sizing)
+            </span>
+            <span className="flex items-center gap-1.5 text-[10px] text-zinc-500">
+              {showCalc ? "ซ่อนเครื่องมือ" : "คลิกเพื่อเปิดเครื่องมือ"}
+              {showCalc ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+            </span>
+          </button>
+
+          {showCalc && (
+            <div className="mt-2 bg-zinc-950/80 border border-zinc-800 rounded-lg p-3">
+              <div className="text-[10px] text-zinc-500 font-mono text-right mb-2.5">Auto Technical Support/Resistance</div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-3">
+                <div>
+                  <label className="text-[10px] text-zinc-400 block mb-1">เงินทุนที่ลง ($)</label>
+                  <input
+                    type="number"
+                    value={capital}
+                    onChange={(e) => setCapital(e.target.value)}
+                    className="w-full bg-zinc-900 border border-zinc-800 rounded px-2 py-1 text-xs font-mono text-zinc-100"
+                    placeholder="1000"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[10px] text-zinc-400 block mb-1">จุดซื้อ / แนวรับ ($)</label>
+                  <input
+                    type="number"
+                    value={entryPrice}
+                    onChange={(e) => setEntryPrice(e.target.value)}
+                    className="w-full bg-zinc-900 border border-zinc-800 rounded px-2 py-1 text-xs font-mono text-emerald-400 font-bold"
+                    placeholder="0.00"
+                  />
+                  <div className="flex gap-1 mt-1 flex-wrap">
+                    {support.map((s, idx) => (
+                      <button
+                        key={idx}
+                        type="button"
+                        onClick={() => setEntryPrice(s.price.toFixed(2))}
+                        className="text-[9px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 px-1 py-0.5 rounded hover:bg-emerald-500/20"
+                      >
+                        S{idx+1}: {s.price.toFixed(1)}
+                      </button>
+                    ))}
+                    {currentPrice && (
+                      <button
+                        type="button"
+                        onClick={() => setEntryPrice(currentPrice.toFixed(2))}
+                        className="text-[9px] bg-zinc-800 text-zinc-300 border border-zinc-700 px-1 py-0.5 rounded hover:bg-zinc-700"
+                      >
+                        ปัจจุบัน
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-[10px] text-zinc-400 block mb-1">ตัดขาดทุน Stop Loss ($)</label>
+                  <input
+                    type="number"
+                    value={stopLoss}
+                    onChange={(e) => setStopLoss(e.target.value)}
+                    className="w-full bg-zinc-900 border border-zinc-800 rounded px-2 py-1 text-xs font-mono text-red-400"
+                    placeholder="0.00"
+                  />
+                </div>
+              </div>
+
+              {cap > 0 && entry > 0 ? (
+                <>
+                  <div className="text-[10px] text-zinc-500 mb-1.5">
+                    กำไรคาดการณ์อัตโนมัติ 3 ช่วง ตามแนวต้าน — เงินทุน ${fmtPrice(cap)} → {shares.toFixed(2)} หุ้น @ ${fmtPrice(entry)}
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    {targets.map((t) => (
+                      <div key={t.key} className="bg-zinc-900/90 border border-zinc-800/80 rounded p-2.5 font-mono text-xs">
+                        <div className="flex items-center justify-between mb-1.5">
+                          <span className="text-[10px] font-semibold text-blue-400">
+                            เป้าหมาย {t.key} {t.isEstimate ? "(ประมาณการ)" : `(${t.touches}x)`}
+                          </span>
+                          <span className="text-zinc-200 font-bold">${fmtPrice(t.price)}</span>
+                        </div>
+                        <div className={`font-bold ${t.profit >= 0 ? "text-emerald-400" : "text-red-400"}`}>
+                          {t.profit >= 0 ? "+" : ""}${fmtPrice(t.profit)} ({fmtPct(t.profitPct)})
+                        </div>
+                        <div className="text-[10px] text-zinc-500 mt-1">
+                          R:R {t.rr ? `1 : ${t.rr}` : "—"}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  {maxLoss > 0 && (
+                    <div className="text-[10px] text-red-400 mt-2">
+                      ⚠️ หากชน Stop Loss (${fmtPrice(sl)}) จะขาดทุนประมาณ ${fmtPrice(maxLoss)}
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div className="text-[11px] text-zinc-500 text-center py-3">
+                  กรอก "เงินทุนที่ลง" และ "จุดซื้อ" เพื่อคำนวณกำไรคาดการณ์อัตโนมัติ 3 ช่วงตามแนวต้าน
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    /* ============================================================
+       TICKER CARD
+       ============================================================ */
+    const TickerCard = React.memo(function TickerCard({ symbol, entry, onRemove, onRefresh, onTimeframeChange }) {
+      const [open, setOpen] = useState(true);
+      const { quote, series, fundamentals, profile, loading, error, timeframe = "1week" } = entry || {};
+
+      const tfObj = TIMEFRAMES.find((t) => t.id === timeframe) || TIMEFRAMES[1];
+
+      const analysis = useMemo(() => {
+        if (!series || series.length < 20) return null;
+        const price = quote?.close ? +quote.close : series[series.length - 1].close;
+        return { cls: classify(series), sr: getSupportResistance(series, price), price };
+      }, [series, quote]);
+
+      const change = quote ? +quote.percent_change : null;
+      const isUp = change != null && change >= 0;
+
+      return (
+        <div className="bg-zinc-900 border border-zinc-800 rounded-lg overflow-hidden">
+          <div className="flex items-center justify-between px-4 py-3 flex-wrap gap-2">
+            <button onClick={() => setOpen((o) => !o)} className="flex items-center gap-2.5 min-w-0">
+              {open ? <ChevronDown size={16} className="text-zinc-500 shrink-0" /> : <ChevronRight size={16} className="text-zinc-500 shrink-0" />}
+              <StockLogo symbol={symbol} logoUrl={profile?.logo} size={28} />
+              <div className="flex flex-col text-left min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="font-mono font-bold text-zinc-100 text-base leading-tight">{symbol}</span>
+                  <span className="text-[10px] bg-blue-500/10 border border-blue-500/30 text-blue-400 px-1.5 py-0.5 rounded font-mono shrink-0">
+                    {tfObj.label} ({tfObj.name})
+                  </span>
+                </div>
+                <span className="text-zinc-400 text-xs truncate max-w-[180px] sm:max-w-[320px] font-sans">
+                  {getStockName(symbol, profile?.name)}
+                </span>
+              </div>
+            </button>
+
+            <div className="flex items-center bg-zinc-950 p-1 rounded border border-zinc-800 gap-1 text-[11px] font-mono">
+              {TIMEFRAMES.map((tf) => (
+                <button
+                  key={tf.id}
+                  onClick={() => onTimeframeChange(symbol, tf.id)}
+                  disabled={loading}
+                  className={`px-2 py-0.5 rounded transition ${
+                    timeframe === tf.id
+                      ? "bg-blue-600 text-white font-bold"
+                      : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800"
+                  }`}
+                >
+                  {tf.label}
+                </button>
+              ))}
+            </div>
+
+            <div className="flex items-center gap-3 ml-auto">
+              {quote && (
+                <div className="text-right font-mono">
+                  <div className="text-zinc-100 text-base leading-tight">${fmtPrice(+quote.close)}</div>
+                  <div className={`text-xs leading-tight ${isUp ? "text-emerald-400" : "text-red-400"}`}>{fmtPct(change)}</div>
+                </div>
+              )}
+              <button onClick={() => onRefresh(symbol)} disabled={loading} className="p-1.5 rounded hover:bg-zinc-800 text-zinc-500 hover:text-zinc-300 disabled:opacity-40">
+                <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
+              </button>
+              <button onClick={() => onRemove(symbol)} className="p-1.5 rounded hover:bg-zinc-800 text-zinc-500 hover:text-red-400">
+                <Trash2 size={14} />
+              </button>
+            </div>
+          </div>
+
+          {open && (
+            <div className="px-4 pb-4 border-t border-zinc-800 pt-3">
+              {error && (
+                <div className="flex items-start gap-2 text-red-400 text-xs bg-red-500/10 border border-red-500/30 rounded px-3 py-2 mb-3">
+                  <AlertTriangle size={14} className="shrink-0 mt-0.5" /> <span>{error}</span>
+                </div>
+              )}
+              {loading && !series && <div className="text-zinc-500 text-sm py-8 text-center">กำลังโหลดข้อมูลกราฟ Timeframe {tfObj.name} จาก Twelve Data…</div>}
+
+              {analysis && (
+                <>
+                  <div className="flex flex-wrap gap-2 mb-3">
+                    <span className={`text-xs font-medium px-2 py-1 rounded border ${TREND_STYLE[analysis.cls.trend]}`}>
+                      เทรนด์: {TREND_TH[analysis.cls.trend]} ({tfObj.label})
+                    </span>
+                    <span className={`text-xs font-medium px-2 py-1 rounded border ${MOM_STYLE[analysis.cls.momentum]}`}>
+                      โมเมนตัม: {MOM_TH[analysis.cls.momentum]}
+                    </span>
+                    {profile?.marketCapitalization && (
+                      <span className="text-xs font-mono px-2 py-1 rounded border border-zinc-700 text-zinc-400">
+                        Mkt Cap ${fmtBig(profile.marketCapitalization * 1e6)} (Finnhub)
+                      </span>
+                    )}
+                  </div>
+
+                  <PriceChart series={series} support={analysis.sr.support} resistance={analysis.sr.resistance} timeframe={timeframe} />
+
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-3 font-mono text-xs">
+                    <div className="bg-zinc-950 rounded px-2 py-1.5 border border-zinc-800">
+                      <div className="text-zinc-500">RSI(14) {tfObj.label}</div>
+                      <div className={analysis.cls.rsi > 60 ? "text-emerald-400" : analysis.cls.rsi < 40 ? "text-red-400" : "text-zinc-200"}>
+                        {analysis.cls.rsi != null ? analysis.cls.rsi.toFixed(1) : "—"}
+                      </div>
+                    </div>
+                    <div className="bg-zinc-950 rounded px-2 py-1.5 border border-zinc-800">
+                      <div className="text-zinc-500">MACD Hist {tfObj.label}</div>
+                      <div className={analysis.cls.macdHist > 0 ? "text-emerald-400" : "text-red-400"}>
+                        {analysis.cls.macdHist != null ? analysis.cls.macdHist.toFixed(2) : "—"}
+                      </div>
+                    </div>
+                    <div className="bg-zinc-950 rounded px-2 py-1.5 border border-zinc-800">
+                      <div className="text-zinc-500">EMA 20 / 50 / 200 {tfObj.label}</div>
+                      <div className="text-zinc-200">
+                        {fmtPrice(analysis.cls.e20)} / {fmtPrice(analysis.cls.e50)} / <span className="text-purple-400">{fmtPrice(analysis.cls.e200)}</span>
+                      </div>
+                    </div>
+                    <div className="bg-zinc-950 rounded px-2 py-1.5 border border-zinc-800">
+                      <div className="text-zinc-500">Volume</div>
+                      <div className="text-zinc-200">{quote ? fmtBig(+quote.volume) : "—"}</div>
+                    </div>
+                  </div>
+
+                  <WatchlistCalculator currentPrice={analysis.price} support={analysis.sr.support} resistance={analysis.sr.resistance} />
+
+                  <div className="text-xs text-zinc-500 mt-2">
+                    แนวรับหลัก (S1–S3): {analysis.sr.support.length ? analysis.sr.support.map((s) => `${s.price.toFixed(2)} (${s.touches}x)`).join(" · ") : "ยังไม่พบ"} &nbsp;|&nbsp;
+                    แนวต้านหลัก (R1–R3): {analysis.sr.resistance.length ? analysis.sr.resistance.map((r) => `${r.price.toFixed(2)} (${r.touches}x)`).join(" · ") : "ยังไม่พบ"}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+      );
+    });
+
+    /* ============================================================
+       SECTOR ROTATION VIEW
+       ============================================================ */
+    function SectorRotationView({ tdKey }) {
+      const [sectorData, setSectorData] = useState([]);
+      const [loading, setLoading] = useState(false);
+      const [progress, setProgress] = useState(0);
+      const [error, setError] = useState(null);
+
+      const [sortField, setSortField] = useState("score");
+      const [sortAsc, setSortAsc] = useState(false);
+
+      const scanSectors = useCallback(async () => {
+        if (!tdKey || !tdKey.trim()) {
+          setError("โปรดใส่ Twelve Data API key ในเมนู ⚙ เพื่อเริ่มการสแกนอัตโนมัติ");
+          return;
+        }
+        setLoading(true);
+        setError(null);
+        setProgress(0);
+
+        const results = [];
+        let spySeries = null;
+
+        try {
+          try {
+            spySeries = await fetchSeries("SPY", tdKey, "1week", 70);
+          } catch (e) {
+            console.warn("Couldn't fetch SPY, using absolute sector metrics.");
+          }
+
+          const spyReturns = spySeries && spySeries.length >= 20 ? {
+            r1w: ((spySeries[spySeries.length - 1].close - spySeries[spySeries.length - 2].close) / spySeries[spySeries.length - 2].close) * 100,
+            r1m: ((spySeries[spySeries.length - 1].close - spySeries[Math.max(0, spySeries.length - 5)].close) / spySeries[Math.max(0, spySeries.length - 5)].close) * 100,
+            r3m: ((spySeries[spySeries.length - 1].close - spySeries[0].close) / spySeries[0].close) * 100,
+          } : { r1w: 0, r1m: 0, r3m: 0 };
+
+          for (let i = 0; i < SECTOR_ETFS.length; i++) {
+            const sec = SECTOR_ETFS[i];
+            setProgress(Math.round(((i + 1) / SECTOR_ETFS.length) * 100));
+
+            try {
+              const series = await fetchSeries(sec.symbol, tdKey, "1week", 70);
+              if (series && series.length >= 12) {
+                const len = series.length;
+                const pNow = series[len - 1].close;
+                const p1w = series[Math.max(0, len - 2)].close;
+                const p1m = series[Math.max(0, len - 5)].close;
+                const p3m = series[0].close;
+
+                const r1w = ((pNow - p1w) / p1w) * 100;
+                const r1m = ((pNow - p1m) / p1m) * 100;
+                const r3m = ((pNow - p3m) / p3m) * 100;
+
+                const rel1w = r1w - spyReturns.r1w;
+                const rel1m = r1m - spyReturns.r1m;
+                const rel3m = r3m - spyReturns.r3m;
+
+                let quadrant = "Lagging";
+                if (rel1m >= 0 && rel1w >= 0) quadrant = "Leading";
+                else if (rel1m >= 0 && rel1w < 0) quadrant = "Weakening";
+                else if (rel1m < 0 && rel1w >= 0) quadrant = "Improving";
+                else quadrant = "Lagging";
+
+                const score = (rel1w * 0.4) + (rel1m * 0.4) + (rel3m * 0.2);
+
+                results.push({
+                  ...sec,
+                  price: pNow,
+                  r1w, r1m, r3m,
+                  rel1w, rel1m, rel3m,
+                  quadrant,
+                  score
+                });
+              }
+            } catch (err) {
+              console.error(`Failed to fetch ${sec.symbol}`, err);
+            }
+          }
+
+          results.sort((a, b) => b.score - a.score);
+          setSectorData(results);
+          saveStore("us-dash-sector-data", results);
+        } catch (e) {
+          setError(e.message || "เกิดข้อผิดพลาดในการโหลดข้อมูล Sector");
+        } finally {
+          setLoading(false);
+        }
+      }, [tdKey]);
+
+      useEffect(() => {
+        loadStore("us-dash-sector-data", []).then((cached) => {
+          if (cached && cached.length) setSectorData(cached);
+        });
+
+        if (tdKey && tdKey.trim() && !sectorAutoScanned) {
+          sectorAutoScanned = true;
+          scanSectors();
+        }
+      }, [tdKey, scanSectors]);
+
+      const sortedSectorData = useMemo(() => {
+        return [...sectorData].sort((a, b) => {
+          const valA = a[sortField] ?? 0;
+          const valB = b[sortField] ?? 0;
+          return sortAsc ? valA - valB : valB - valA;
+        });
+      }, [sectorData, sortField, sortAsc]);
+
+      const handleSort = (field) => {
+        if (sortField === field) {
+          setSortAsc(!sortAsc);
+        } else {
+          setSortField(field);
+          setSortAsc(false);
+        }
+      };
+
+      const quadrants = useMemo(() => {
+        const groups = { Leading: [], Weakening: [], Improving: [], Lagging: [] };
+        sectorData.forEach((s) => {
+          if (groups[s.quadrant]) groups[s.quadrant].push(s);
+        });
+        return groups;
+      }, [sectorData]);
+
+      const QUAD_STYLE = {
+        Leading: "text-emerald-400 bg-emerald-500/10 border-emerald-500/30",
+        Weakening: "text-amber-400 bg-amber-500/10 border-amber-500/30",
+        Improving: "text-blue-400 bg-blue-500/10 border-blue-500/30",
+        Lagging: "text-red-400 bg-red-500/10 border-red-500/30",
+      };
+
+      return (
+        <div className="space-y-4">
+          <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-4 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="font-semibold text-base flex items-center gap-2">
+                <PieChart className="text-emerald-400" size={18} />
+                Sector Rotation Radar (Twelve Data Realtime)
+              </div>
+              <div className="text-xs text-zinc-400 mt-1">
+                เปรียบเทียบความแข็งแกร่งสัมพัทธ์ (Relative Strength) ของ 11 Sectors เทียบกับ S&P 500 (SPY)
+              </div>
+            </div>
+
+            <button
+              onClick={scanSectors}
+              disabled={loading}
+              className="flex items-center gap-2 px-4 py-2 rounded bg-blue-600 text-white font-medium text-xs hover:bg-blue-500 disabled:opacity-50 transition"
+            >
+              <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
+              {loading ? `กำลังสแกนเรียลไทม์... (${progress}%)` : "สแกน Sector อัปเดตใหม่"}
+            </button>
+          </div>
+
+          {error && (
+            <div className="flex items-center gap-2 text-red-400 text-xs bg-red-500/10 border border-red-500/30 rounded px-3 py-2">
+              <AlertTriangle size={14} className="shrink-0" /> {error}
+            </div>
+          )}
+
+          <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-4">
+            <div className="text-sm font-semibold text-zinc-200 mb-3 flex items-center justify-between">
+              <span>🎯 Sector Rotation Matrix</span>
+              <span className="text-xs font-normal text-zinc-500">แกน X: โมเมนตัม 1W | แกน Y: แนวโน้ม 1M</span>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div className="bg-zinc-950/80 border border-blue-500/30 rounded p-3 relative min-h-[120px]">
+                <div className="flex items-center justify-between border-b border-zinc-800 pb-1.5 mb-2">
+                  <span className="text-xs font-semibold text-blue-400 flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-blue-400"></span> IMPROVING (กำลังฟื้นตัว)
+                  </span>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {quadrants.Improving.map((s) => (
+                    <span key={s.symbol} className="text-xs bg-blue-500/10 border border-blue-500/30 text-blue-300 font-mono px-2 py-1 rounded flex items-center gap-1.5">
+                      <StockLogo symbol={s.symbol} size={16} />
+                      <span>{s.symbol}</span>
+                      <span className="text-[10px] opacity-80">{fmtPct(s.rel1w)}</span>
+                    </span>
+                  ))}
+                </div>
+              </div>
+
+              <div className="bg-zinc-950/80 border border-emerald-500/40 rounded p-3 relative min-h-[120px]">
+                <div className="flex items-center justify-between border-b border-zinc-800 pb-1.5 mb-2">
+                  <span className="text-xs font-semibold text-emerald-400 flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-emerald-400"></span> LEADING (ผู้นำตลาด)
+                  </span>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {quadrants.Leading.map((s) => (
+                    <span key={s.symbol} className="text-xs bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 font-mono px-2 py-1 rounded font-medium flex items-center gap-1.5">
+                      <StockLogo symbol={s.symbol} size={16} />
+                      <span>{s.symbol}</span>
+                      <span className="text-[10px] opacity-80">{fmtPct(s.rel1w)}</span>
+                    </span>
+                  ))}
+                </div>
+              </div>
+
+              <div className="bg-zinc-950/80 border border-red-500/30 rounded p-3 relative min-h-[120px]">
+                <div className="flex items-center justify-between border-b border-zinc-800 pb-1.5 mb-2">
+                  <span className="text-xs font-semibold text-red-400 flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-red-400"></span> LAGGING (ล้าหลัง)
+                  </span>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {quadrants.Lagging.map((s) => (
+                    <span key={s.symbol} className="text-xs bg-red-500/10 border border-red-500/30 text-red-300 font-mono px-2 py-1 rounded flex items-center gap-1.5">
+                      <StockLogo symbol={s.symbol} size={16} />
+                      <span>{s.symbol}</span>
+                      <span className="text-[10px] opacity-80">{fmtPct(s.rel1w)}</span>
+                    </span>
+                  ))}
+                </div>
+              </div>
+
+              <div className="bg-zinc-950/80 border border-amber-500/30 rounded p-3 relative min-h-[120px]">
+                <div className="flex items-center justify-between border-b border-zinc-800 pb-1.5 mb-2">
+                  <span className="text-xs font-semibold text-amber-400 flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-amber-400"></span> WEAKENING (เริ่มชะลอตัว)
+                  </span>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {quadrants.Weakening.map((s) => (
+                    <span key={s.symbol} className="text-xs bg-amber-500/10 border border-amber-500/30 text-amber-300 font-mono px-2 py-1 rounded flex items-center gap-1.5">
+                      <StockLogo symbol={s.symbol} size={16} />
+                      <span>{s.symbol}</span>
+                      <span className="text-[10px] opacity-80">{fmtPct(s.rel1w)}</span>
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-4 overflow-x-auto">
+            <div className="text-sm font-semibold text-zinc-200 mb-3 flex flex-wrap items-center justify-between gap-2">
+              <span>📊 ตารางสรุปข้อมูลทั้ง 11 Sectors</span>
+              <div className="flex items-center gap-2 text-xs font-normal">
+                <span className="text-zinc-400">การจัดเรียง:</span>
+                <button
+                  onClick={() => setSortAsc(!sortAsc)}
+                  className="px-2.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-blue-400 border border-zinc-700 flex items-center gap-1 font-mono text-[11px]"
+                >
+                  {sortAsc ? "⬆️ เงินไหลเข้าน้อย → มาก" : "⬇️ เงินไหลเข้ามาก → น้อย"}
+                </button>
+              </div>
+            </div>
+
+            {loading && sectorData.length === 0 ? (
+              <div className="text-center text-zinc-400 py-8 text-xs flex items-center justify-center gap-2">
+                <RefreshCw size={14} className="animate-spin text-blue-400" /> กำลังดึงข้อมูล Sector เรียลไทม์... ({progress}%)
+              </div>
+            ) : sortedSectorData.length === 0 ? (
+              <div className="text-center text-zinc-500 py-8 text-xs">
+                ไม่พบข้อมูล โปรดตรวจสอบ API Key ในเมนู ⚙ แล้วกดปุ่มสแกน
+              </div>
+            ) : (
+              <table className="w-full text-left text-xs font-mono">
+                <thead>
+                  <tr className="border-b border-zinc-800 text-zinc-400">
+                    <th className="pb-2">Sector / ETF</th>
+                    <th className="pb-2 text-right">ราคา</th>
+                    <th className="pb-2 text-right cursor-pointer hover:text-zinc-200 select-none" onClick={() => handleSort('r1w')}>
+                      1W (%) {sortField === 'r1w' ? (sortAsc ? '▲' : '▼') : ''}
+                    </th>
+                    <th className="pb-2 text-right cursor-pointer hover:text-zinc-200 select-none" onClick={() => handleSort('r1m')}>
+                      1M (%) {sortField === 'r1m' ? (sortAsc ? '▲' : '▼') : ''}
+                    </th>
+                    <th className="pb-2 text-right cursor-pointer hover:text-zinc-200 select-none" onClick={() => handleSort('rel1w')}>
+                      VS SPY (1W) {sortField === 'rel1w' ? (sortAsc ? '▲' : '▼') : ''}
+                    </th>
+                    <th className="pb-2 text-center">สถานะ Quadrant</th>
+                    <th className="pb-2 text-right cursor-pointer hover:text-zinc-200 select-none" onClick={() => handleSort('score')}>
+                      RS Score (เงินไหลเข้า) {sortField === 'score' ? (sortAsc ? '▲' : '▼') : ''}
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-zinc-800/60">
+                  {sortedSectorData.map((s) => (
+                    <tr key={s.symbol} className="hover:bg-zinc-800/40 transition">
+                      <td className="py-2.5">
+                        <div className="flex items-center gap-2.5">
+                          <StockLogo symbol={s.symbol} size={28} />
+                          <div>
+                            <div className="font-bold text-zinc-100 font-mono">{s.symbol}</div>
+                            <div className="text-[10px] text-zinc-400 font-sans">{s.thName} ({s.name})</div>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="py-2.5 text-right font-bold text-zinc-200">${fmtPrice(s.price)}</td>
+                      <td className={`py-2.5 text-right ${s.r1w >= 0 ? "text-emerald-400" : "text-red-400"}`}>{fmtPct(s.r1w)}</td>
+                      <td className={`py-2.5 text-right ${s.r1m >= 0 ? "text-emerald-400" : "text-red-400"}`}>{fmtPct(s.r1m)}</td>
+                      <td className={`py-2.5 text-right ${s.rel1w >= 0 ? "text-emerald-400" : "text-red-400"}`}>{fmtPct(s.rel1w)}</td>
+                      <td className="py-2.5 text-center">
+                        <span className={`text-[10px] px-2 py-0.5 rounded border ${QUAD_STYLE[s.quadrant]}`}>
+                          {s.quadrant}
+                        </span>
+                      </td>
+                      <td className="py-2.5 text-right font-bold text-zinc-100">{s.score ? s.score.toFixed(1) : "0.0"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    /* ============================================================
+       SCREENER — AUTOMATED 10x-100x S-CURVE ALGORITHM
+       ============================================================ */
+    const S_CURVE_RULES = [
+      { key: "s1", label: "1. S-Curve & Runway", desc: "เทรนด์ใหญ่โลกเลี่ยงไม่ได้ + อยู่ต้น S-Curve ลู่วิ่งโต 5-10 ปี" },
+      { key: "s2", label: "2. Scalable Moat", desc: "ยิ่งโตยิ่งต้นทุนถูกลง + คูเมืองปกป้องธุรกิจ (Gross Margin สูง)" },
+      { key: "s3", label: "3. Founder-Driven", desc: "บริหารด้วย Founder DNA กล้าเดิมพัน เน้นการเติบโตเชิงรุก" },
+      { key: "s4", label: "4. Reality & Catalyst", desc: "ลูกค้ายอมจ่ายเงินจริง (รายได้โต) + มี Catalyst เร่งราคา" },
+    ];
+
+    function calculateAutoSCurve(entry) {
+      if (!entry) return null;
+      const { series, fundamentals, profile } = entry;
+      if (!series || series.length < 20) return null;
+
+      const cls = classify(series);
+      
+      const rawRevGrowth = pick(fundamentals, ["revenueGrowthTTMYoy", "revenueGrowth3Y", "revenueGrowthQuarterlyYoy"]);
+      const revGrowthPct = rawRevGrowth == null ? null : (Math.abs(rawRevGrowth) < 3 ? rawRevGrowth * 100 : rawRevGrowth);
+
+      const rawGrossMargin = pick(fundamentals, ["grossMarginTTM", "grossMarginAnnual"]);
+      const grossMarginPct = rawGrossMargin == null ? null : (Math.abs(rawGrossMargin) < 3 ? rawGrossMargin * 100 : rawGrossMargin);
+
+      const mktCap = (pick(fundamentals, ["marketCapitalization"]) || profile?.marketCapitalization || 0) * 1e6;
+      const mktCapB = mktCap / 1e9;
+
+      let s1 = 0;
+      let s1Notes = [];
+      if (revGrowthPct != null) {
+        if (revGrowthPct >= 35) { s1 += 2; s1Notes.push(`รายได้โตจัด ${revGrowthPct.toFixed(1)}% YoY (Finnhub)`); }
+        else if (revGrowthPct >= 15) { s1 += 1; s1Notes.push(`รายได้เติบโตดี ${revGrowthPct.toFixed(1)}% YoY (Finnhub)`); }
+      }
+      if (mktCapB > 0 && mktCapB <= 20) { s1 += 2; s1Notes.push(`Mkt Cap $${mktCapB.toFixed(1)}B (ลู่วิ่งยาว)`); }
+      else if (mktCapB > 20 && mktCapB <= 100) { s1 += 1; s1Notes.push(`Mkt Cap $${mktCapB.toFixed(1)}B (Mid-Cap)`); }
+      if (cls.trend === "Uptrend") { s1 += 1; s1Notes.push("กราฟ Uptrend หนุนเทรนด์ใหญ่ (TD)"); }
+      s1 = Math.min(5, s1);
+
+      let s2 = 0;
+      let s2Notes = [];
+      if (grossMarginPct != null) {
+        if (grossMarginPct >= 65) { s2 += 3; s2Notes.push(`Gross Margin สูงมาก ${grossMarginPct.toFixed(1)}% (Finnhub)`); }
+        else if (grossMarginPct >= 45) { s2 += 2; s2Notes.push(`Gross Margin แข็งแกร่ง ${grossMarginPct.toFixed(1)}% (Finnhub)`); }
+        else if (grossMarginPct >= 25) { s2 += 1; s2Notes.push(`Gross Margin ${grossMarginPct.toFixed(1)}% (Finnhub)`); }
+      } else { s2 += 1; }
+      if (revGrowthPct != null && revGrowthPct > 20 && grossMarginPct > 50) {
+        s2 += 2; s2Notes.push("Scalable Moat (รายได้โตขนาน Margin สูง)");
+      } else if (grossMarginPct > 40) {
+        s2 += 1; s2Notes.push("มี Pricing Power จาก Gross Margin");
+      }
+      s2 = Math.min(5, s2);
+
+      let s3 = 0;
+      let s3Notes = [];
+      if (revGrowthPct != null && revGrowthPct >= 25) { s3 += 2; s3Notes.push("กล้าเดิมพัน R&D/การเติบโตเชิงรุก"); }
+      if (mktCapB > 0 && mktCapB <= 50) { s3 += 2; s3Notes.push("โครงสร้างคล่องตัวสไตล์ Founder"); } else { s3 += 1; }
+      if (cls.momentum === "Strong Bullish" || cls.momentum === "Bullish") {
+        s3 += 1; s3Notes.push("วิสัยทัศน์ผู้บริหารหนุนความเชื่อมั่น (TD)");
+      }
+      s3 = Math.min(5, s3);
+
+      let s4 = 0;
+      let s4Notes = [];
+      if (revGrowthPct != null && revGrowthPct > 0) { s4 += 2; s4Notes.push("มีลูกค้ายอมจ่ายเงินจริง (รายได้เป็นบวก)"); }
+      if (cls.trend === "Uptrend") { s4 += 2; s4Notes.push("มี Catalyst ทางเทคนิค Uptrend (TD)"); }
+      else if (cls.momentum === "Bullish" || cls.momentum === "Strong Bullish") { s4 += 1; s4Notes.push("แรงซื้อโมเมนตัมฟื้นตัว (TD)"); }
+      if (cls.rsi > 50) { s4 += 1; s4Notes.push("RSI > 50 ตลาดเริ่มให้มูลค่า (TD)"); }
+      s4 = Math.min(5, s4);
+
+      const total = s1 + s2 + s3 + s4;
+      return { s1, s2, s3, s4, total, notes: { s1: s1Notes, s2: s2Notes, s3: s3Notes, s4: s4Notes }, revGrowthPct, grossMarginPct, mktCapB };
+    }
+
+    function autoVerdict(total) {
+      if (total >= 16) return { label: "🔥 ตัวเต็ง S-Curve 10x", style: "text-emerald-400 border-emerald-500/40 bg-emerald-500/10" };
+      if (total >= 11) return { label: "👀 น่าจับตาเกณฑ์ผ่าน 60%+", style: "text-amber-400 border-amber-500/40 bg-amber-500/10" };
+      return { label: "⚠️ ยังไม่เข้าเกณฑ์ S-Curve", style: "text-zinc-400 border-zinc-700 bg-zinc-800/40" };
+    }
+
+    function ScreenerRow({ symbol, entry }) {
+      const [expanded, setExpanded] = useState(false);
+      const { series, loading } = entry || {};
+
+      const evalData = useMemo(() => calculateAutoSCurve(entry), [entry]);
+      const cls = series && series.length > 20 ? classify(series) : null;
+
+      if (loading && !evalData) {
+        return (
+          <div className="px-4 py-3 border-b border-zinc-800 text-xs text-zinc-500 flex items-center gap-2">
+            <RefreshCw size={12} className="animate-spin" /> กำลังประเมินเกณฑ์ S-Curve สำหรับ {symbol}...
+          </div>
+        );
+      }
+
+      const totalScore = evalData ? evalData.total : 0;
+      const verdict = autoVerdict(totalScore);
+
+      return (
+        <div className="border-b border-zinc-800 last:border-b-0">
+          <button onClick={() => setExpanded((e) => !e)} className="w-full flex items-center gap-3 px-3 py-3 hover:bg-zinc-900/60 text-left transition">
+            {expanded ? <ChevronDown size={14} className="text-zinc-500 shrink-0" /> : <ChevronRight size={14} className="text-zinc-500 shrink-0" />}
+            
+            <div className="flex items-center gap-3 min-w-[180px] sm:min-w-[240px] shrink-0">
+              <StockLogo symbol={symbol} logoUrl={entry?.profile?.logo} size={28} />
+              <div className="min-w-0">
+                <div className="font-mono font-bold text-zinc-100 text-sm leading-tight">{symbol}</div>
+                <div className="text-[11px] text-zinc-400 truncate max-w-[120px] sm:max-w-[180px] font-sans">
+                  {getStockName(symbol, entry?.profile?.name)}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] sm:text-xs font-mono text-zinc-400 flex-1 min-w-[180px]">
+              <span>รายได้โต: <strong className={evalData?.revGrowthPct >= 20 ? "text-emerald-400" : "text-zinc-200"}>{evalData?.revGrowthPct != null ? `${evalData.revGrowthPct.toFixed(1)}%` : "—"}</strong></span>
+              <span>Margin: <strong className={evalData?.grossMarginPct >= 50 ? "text-emerald-400" : "text-zinc-200"}>{evalData?.grossMarginPct != null ? `${evalData.grossMarginPct.toFixed(1)}%` : "—"}</strong></span>
+              <span>Mkt Cap: <strong className="text-zinc-200">{evalData?.mktCapB ? `$${evalData.mktCapB.toFixed(1)}B` : "—"}</strong></span>
+            </div>
+
+            {cls && (
+              <span className={`text-[11px] px-2 py-0.5 rounded border shrink-0 ${TREND_STYLE[cls.trend]}`}>
+                {TREND_TH[cls.trend]}
+              </span>
+            )}
+
+            <div className="flex items-center gap-2 ml-auto shrink-0">
+              <span className="font-mono text-base font-bold text-zinc-100 bg-zinc-950 px-2.5 py-0.5 rounded border border-zinc-800">
+                {totalScore}<span className="text-xs font-normal text-zinc-500">/20</span>
+              </span>
+              <span className={`text-xs px-2.5 py-1 rounded border font-medium ${verdict.style}`}>
+                {verdict.label}
+              </span>
+            </div>
+          </button>
+
+          {expanded && evalData && (
+            <div className="px-4 pb-4 pt-2 bg-zinc-950/60 border-t border-zinc-800/60 space-y-3">
+              <div className="text-xs text-zinc-400 flex items-center justify-between">
+                <span>📊 ข้อมูลพื้นฐานหลัก (Key Fundamentals)</span>
+                <span className="font-mono text-[11px] text-zinc-500">ที่มา: Finnhub / Twelve Data</span>
+              </div>
+
+              <div className="grid grid-cols-3 gap-2.5">
+                <div className="bg-zinc-900 border border-zinc-800 rounded p-3">
+                  <div className="text-[10px] text-zinc-500 mb-1">รายได้เติบโต YoY (Revenue Growth)</div>
+                  <div className={`font-mono font-bold text-base sm:text-lg ${evalData.revGrowthPct >= 20 ? "text-emerald-400" : "text-zinc-100"}`}>
+                    {evalData.revGrowthPct != null ? `${evalData.revGrowthPct.toFixed(1)}%` : "—"}
+                  </div>
+                </div>
+                <div className="bg-zinc-900 border border-zinc-800 rounded p-3">
+                  <div className="text-[10px] text-zinc-500 mb-1">Gross Margin</div>
+                  <div className={`font-mono font-bold text-base sm:text-lg ${evalData.grossMarginPct >= 50 ? "text-emerald-400" : "text-zinc-100"}`}>
+                    {evalData.grossMarginPct != null ? `${evalData.grossMarginPct.toFixed(1)}%` : "—"}
+                  </div>
+                </div>
+                <div className="bg-zinc-900 border border-zinc-800 rounded p-3">
+                  <div className="text-[10px] text-zinc-500 mb-1">Market Cap</div>
+                  <div className="font-mono font-bold text-base sm:text-lg text-zinc-100">
+                    {evalData.mktCapB ? `$${evalData.mktCapB.toFixed(1)}B` : "—"}
+                  </div>
+                </div>
+              </div>
+
+              <div className="text-xs text-zinc-400 flex items-center justify-between pt-1">
+                <span>🔥 รายละเอียดการวิเคราะห์อัลกอริทึม S-Curve สแกนอัตโนมัติ:</span>
+                <span className="font-mono text-[11px] text-zinc-500">Auto Score Breakdown</span>
+              </div>
+
+              <div className="grid sm:grid-cols-2 gap-2.5">
+                {S_CURVE_RULES.map((rule) => {
+                  const scoreKey = rule.key;
+                  const scoreVal = evalData[scoreKey];
+                  const notes = evalData.notes[scoreKey] || [];
+
+                  return (
+                    <div key={rule.key} className="bg-zinc-900 border border-zinc-800 rounded p-3">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-xs font-semibold text-zinc-200">{rule.label}</span>
+                        <span className={`font-mono text-xs font-bold px-2 py-0.5 rounded ${scoreVal >= 4 ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30" : "bg-zinc-800 text-zinc-300"}`}>
+                          {scoreVal} / 5 คะแนน
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-zinc-500 mb-2">{rule.desc}</div>
+                      
+                      <div className="flex flex-wrap gap-1">
+                        {notes.map((n, i) => (
+                          <span key={i} className="text-[10px] bg-zinc-950 text-emerald-400 border border-emerald-500/20 px-1.5 py-0.5 rounded">
+                            ✓ {n}
+                          </span>
+                        ))}
+                        {notes.length === 0 && (
+                          <span className="text-[10px] text-zinc-600 italic">ไม่พบตัวเร่งตามเกณฑ์ข้อนี้</span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    /* ============================================================
+       MAIN APP
+       ============================================================ */
+    function App() {
+      const [symbols, setSymbols] = useState([]);
+      const [dataMap, setDataMap] = useState({});
+      const dataMapRef = useRef({});
+      useEffect(() => {
+        dataMapRef.current = dataMap;
+      }, [dataMap]);
+      const [tdKey, setTdKey] = useState("");
+      const [fhKey, setFhKey] = useState("");
+      const [tdKeyDraft, setTdKeyDraft] = useState("");
+      const [fhKeyDraft, setFhKeyDraft] = useState("");
+      const [tdRatePerMin, setTdRatePerMin] = useState(8);
+      const [tdRateDraft, setTdRateDraft] = useState("8");
+      const [showSettings, setShowSettings] = useState(false);
+      const [tab, setTab] = useState("watchlist");
+      const [input, setInput] = useState("");
+      const [booted, setBooted] = useState(false);
+      const [refreshCooldown, setRefreshCooldown] = useState(0);
+      const [tdCallsToday, setTdCallsToday] = useState(0);
+      const cooldownRef = useRef(null);
+
+      const [screenerFilter, setScreenerFilter] = useState("ALL");
+      const [screenerSort, setScreenerSort] = useState("SCORE");
+
+      const [watchlistTrendFilter, setWatchlistTrendFilter] = useState("ALL");
+      const [watchlistSearch, setWatchlistSearch] = useState("");
+      const deferredWatchlistSearch = useDeferredValue(watchlistSearch);
+
+      useEffect(() => {
+        (async () => {
+          const [keys, wl] = await Promise.all([
+            loadStore("us-dash-keys", { td: "", fh: "", tdRate: 8 }),
+            loadStore("us-dash-watchlist", DEFAULT_WATCHLIST),
+          ]);
+          setTdKey(keys.td || "");
+          setFhKey(keys.fh || "");
+          setTdKeyDraft(keys.td || "");
+          setFhKeyDraft(keys.fh || "");
+          const rate = keys.tdRate || 8;
+          setTdRatePerMin(rate);
+          setTdRateDraft(String(rate));
+          setTdRateLimit(rate);
+          setSymbols(wl);
+
+          const cachedMap = {};
+          wl.forEach((s) => {
+            const cached = loadCachedEntry(s);
+            if (cached) cachedMap[s] = { ...cached, loading: true, stale: true };
+          });
+          if (Object.keys(cachedMap).length > 0) {
+            setDataMap((prev) => ({ ...cachedMap, ...prev }));
+          }
+
+          setBooted(true);
+        })();
+      }, []);
+
+      useEffect(() => {
+        const tick = () => setTdCallsToday(getTdCallsToday());
+        tick();
+        const id = setInterval(tick, 3000);
+        return () => clearInterval(id);
+      }, []);
+
+      const setEntry = useCallback((symbol, patch) => {
+        setDataMap((prev) => ({ ...prev, [symbol]: { ...(prev[symbol] || {}), ...patch } }));
+      }, []);
+
+      const loadSymbol = useCallback(async (symbol, full = true, timeframe = DEFAULT_TIMEFRAME) => {
+        setEntry(symbol, { loading: true, error: null });
+        try {
+          const key = tdKey.trim();
+          const fh = fhKey.trim();
+          if (!key) throw new Error("ยังไม่ได้ใส่ Twelve Data API key (ตั้งค่า ⚙)");
+
+          const fhPromise = (full && fh)
+            ? Promise.all([fetchFundamentals(symbol, fh), fetchProfile(symbol, fh)]).catch((fhErr) => {
+                console.warn(`Finnhub error for ${symbol}:`, fhErr);
+                return null;
+              })
+            : null;
+
+          const quote = await fetchQuote(symbol, key);
+          setEntry(symbol, { quote, loading: full, error: null, stale: false });
+
+          if (full) {
+            const series = await fetchSeries(symbol, key, timeframe);
+            setEntry(symbol, { series, timeframe, loading: false, stale: false });
+            saveCachedEntry(symbol, { quote, series, timeframe });
+
+            if (fhPromise) {
+              const fhResult = await fhPromise;
+              if (fhResult) {
+                const [fundamentals, profile] = fhResult;
+                setEntry(symbol, { fundamentals, profile });
+                saveCachedEntry(symbol, { quote, series, timeframe, fundamentals, profile });
+              }
+            }
+          } else {
+            setEntry(symbol, { loading: false });
+          }
+        } catch (e) {
+          setEntry(symbol, { loading: false, error: e.message || "โหลดข้อมูลไม่สำเร็จ" });
+        }
+      }, [tdKey, fhKey, setEntry]);
+
+      const loadSeries = useCallback(async (symbol, timeframe) => {
+        setEntry(symbol, { loading: true, error: null });
+        try {
+          const key = tdKey.trim();
+          if (!key) throw new Error("ยังไม่ได้ใส่ Twelve Data API key (ตั้งค่า ⚙)");
+          const series = await fetchSeries(symbol, key, timeframe);
+          setEntry(symbol, { series, timeframe, loading: false, error: null, stale: false });
+          const existing = dataMapRef.current[symbol] || {};
+          saveCachedEntry(symbol, {
+            quote: existing.quote,
+            series,
+            timeframe,
+            fundamentals: existing.fundamentals,
+            profile: existing.profile,
+          });
+        } catch (e) {
+          setEntry(symbol, { loading: false, error: e.message || "โหลดข้อมูลไม่สำเร็จ" });
+        }
+      }, [tdKey, setEntry]);
+
+      useEffect(() => {
+        if (!booted || !tdKey.trim()) return;
+        symbols.forEach((s) => loadSymbol(s, true, dataMapRef.current[s]?.timeframe || DEFAULT_TIMEFRAME));
+      }, [booted, tdKey, fhKey]);
+
+      const handleSymbolTimeframeChange = useCallback((symbol, tf) => {
+        if (dataMapRef.current[symbol]?.quote) loadSeries(symbol, tf);
+        else loadSymbol(symbol, true, tf);
+      }, [loadSeries, loadSymbol]);
+
+      const handleRefreshSymbol = useCallback((s) => {
+        loadSymbol(s, true, dataMapRef.current[s]?.timeframe || DEFAULT_TIMEFRAME);
+      }, [loadSymbol]);
+
+      const addSymbol = useCallback((raw) => {
+        const s = raw.trim().toUpperCase();
+        if (!s || symbols.includes(s) || symbols.length >= MAX_SYMBOLS) return;
+        const next = [...symbols, s];
+        setSymbols(next);
+        saveStore("us-dash-watchlist", next);
+        setInput("");
+        if (tdKey.trim()) loadSymbol(s, true, DEFAULT_TIMEFRAME);
+      }, [symbols, tdKey, loadSymbol]);
+
+      const removeSymbol = useCallback((s) => {
+        setSymbols((prev) => {
+          const next = prev.filter((x) => x !== s);
+          saveStore("us-dash-watchlist", next);
+          return next;
+        });
+      }, []);
+
+      const refreshAll = useCallback(() => {
+        if (refreshCooldown > 0) return;
+        symbols.forEach((s) => loadSymbol(s, true, dataMapRef.current[s]?.timeframe || DEFAULT_TIMEFRAME));
+        setRefreshCooldown(20);
+        cooldownRef.current = setInterval(() => {
+          setRefreshCooldown((c) => {
+            if (c <= 1) { clearInterval(cooldownRef.current); return 0; }
+            return c - 1;
+          });
+        }, 1000);
+      }, [refreshCooldown, symbols, loadSymbol]);
+
+      const commitKeys = () => {
+        const td = tdKeyDraft.trim();
+        const fh = fhKeyDraft.trim();
+        const rate = Math.max(1, parseInt(tdRateDraft, 10) || 8);
+        if (td !== tdKey) setTdKey(td);
+        if (fh !== fhKey) setFhKey(fh);
+        setTdRatePerMin(rate);
+        setTdRateDraft(String(rate));
+        setTdRateLimit(rate);
+        saveStore("us-dash-keys", { td, fh, tdRate: rate });
+      };
+
+      const exportBackup = () => {
+        const data = {
+          portfolios: JSON.parse(localStorage.getItem("us-dash-portfolios-v3") || "[]"),
+          watchlist: JSON.parse(localStorage.getItem("us-dash-watchlist") || "[]"),
+          keys: JSON.parse(localStorage.getItem("us-dash-keys") || "{}"),
+          version: "3.0.0",
+          exportDate: new Date().toISOString()
+        };
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `us-stock-terminal-backup-${new Date().toISOString().slice(0, 10)}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+      };
+
+      const importBackup = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (event) => {
+          try {
+            const parsed = JSON.parse(event.target.result);
+            if (parsed.portfolios) saveStore("us-dash-portfolios-v3", parsed.portfolios);
+            if (parsed.watchlist) {
+              saveStore("us-dash-watchlist", parsed.watchlist);
+              setSymbols(parsed.watchlist);
+            }
+            if (parsed.keys) {
+              saveStore("us-dash-keys", parsed.keys);
+              setTdKey(parsed.keys.td || "");
+              setFhKey(parsed.keys.fh || "");
+              setTdKeyDraft(parsed.keys.td || "");
+              setFhKeyDraft(parsed.keys.fh || "");
+              const rate = parsed.keys.tdRate || 8;
+              setTdRatePerMin(rate);
+              setTdRateDraft(String(rate));
+              setTdRateLimit(rate);
+            }
+            alert("นำเข้าข้อมูลสำรองสำเร็จเรียบร้อย!");
+            window.location.reload();
+          } catch (err) {
+            alert("ไฟล์สำรองไม่ถูกต้อง: " + err.message);
+          }
+        };
+        reader.readAsText(file);
+      };
+
+      const sortedScreenerSymbols = useMemo(() => {
+        let list = symbols.map((sym) => {
+          const entry = dataMap[sym];
+          const evalData = calculateAutoSCurve(entry);
+          return { symbol: sym, entry, evalData, totalScore: evalData ? evalData.total : 0 };
+        });
+
+        if (screenerFilter === "CANDIDATES") {
+          list = list.filter((item) => item.totalScore >= 16);
+        } else if (screenerFilter === "WATCH") {
+          list = list.filter((item) => item.totalScore >= 11 && item.totalScore < 16);
+        } else if (screenerFilter === "UNQUALIFIED") {
+          list = list.filter((item) => item.totalScore < 11);
+        }
+
+        list.sort((a, b) => {
+          if (screenerSort === "REV") {
+            return (b.evalData?.revGrowthPct ?? -999) - (a.evalData?.revGrowthPct ?? -999);
+          }
+          if (screenerSort === "MARGIN") {
+            return (b.evalData?.grossMarginPct ?? -999) - (a.evalData?.grossMarginPct ?? -999);
+          }
+          return b.totalScore - a.totalScore;
+        });
+
+        return list;
+      }, [symbols, dataMap, screenerFilter, screenerSort]);
+
+      const filteredWatchlistSymbols = useMemo(() => {
+        return symbols.filter((sym) => {
+          const entry = dataMap[sym];
+          const fullName = getStockName(sym, entry?.profile?.name).toUpperCase();
+          const query = deferredWatchlistSearch.toUpperCase();
+          const searchMatch = !query || sym.includes(query) || fullName.includes(query);
+          if (!searchMatch) return false;
+
+          if (watchlistTrendFilter === "ALL") return true;
+
+          if (entry && entry.series && entry.series.length > 20) {
+            const cls = classify(entry.series);
+            return cls.trend === watchlistTrendFilter;
+          }
+          return true;
+        });
+      }, [symbols, dataMap, deferredWatchlistSearch, watchlistTrendFilter]);
+
+      return (
+        <div className="min-h-full bg-zinc-950 text-zinc-100 pb-10">
+          <div className="border-b border-zinc-800 px-4 py-3 flex items-center gap-3 flex-wrap bg-zinc-900/40">
+            <Radar size={20} className="text-blue-400" />
+            <div>
+              <div className="font-semibold text-sm flex items-center gap-2">
+                US Stock Terminal <span className="text-[10px] bg-blue-500/20 text-blue-300 border border-blue-500/40 px-1.5 py-0.5 rounded font-mono">v3.0 Pro</span>
+              </div>
+              <div className="text-[11px] text-zinc-500 font-sans">Twelve Data (ราคา & กราฟ) | Finnhub (งบการเงิน & โลโก้)</div>
+            </div>
+            <div className="ml-auto flex items-center gap-2">
+              <span className="text-xs font-mono text-zinc-400 border border-zinc-800 bg-zinc-900 px-2 py-1 rounded">
+                TD Calls Today: <strong className="text-blue-400">{tdCallsToday}</strong>
+                <span className="text-zinc-600 mx-1.5">|</span>
+                {tdRatePerMin}/นาที
+              </span>
+              <button
+                onClick={exportBackup}
+                className="flex items-center gap-1 text-xs bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 px-2.5 py-1 rounded text-zinc-300"
+                title="ส่งออกข้อมูลสำรอง"
+              >
+                <Download size={13} /> สำรองข้อมูล
+              </button>
+              <label className="flex items-center gap-1 text-xs bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 px-2.5 py-1 rounded text-zinc-300 cursor-pointer">
+                <Upload size={13} /> นำเข้าข้อมูล
+                <input type="file" accept=".json" onChange={importBackup} className="hidden" />
+              </label>
+              <button
+                onClick={() => setShowSettings((s) => !s)}
+                className="p-1.5 rounded hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 border border-zinc-800 bg-zinc-900"
+              >
+                <Settings size={16} />
+              </button>
+            </div>
+          </div>
+
+          {showSettings && (
+            <div className="p-4 bg-zinc-900 border-b border-zinc-800 space-y-3">
+              <div className="text-xs font-semibold text-zinc-200">⚙️ การตั้งค่า API Key</div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                <div>
+                  <label className="text-zinc-400 block mb-1">Twelve Data API Key (หลัก สำหรับราคา & กราฟ)</label>
+                  <input
+                    type="password"
+                    value={tdKeyDraft}
+                    onChange={(e) => setTdKeyDraft(e.target.value)}
+                    className="w-full bg-zinc-950 border border-zinc-800 rounded px-3 py-1.5 font-mono text-zinc-100"
+                    placeholder="ใส่ Key Twelve Data"
+                  />
+                </div>
+                <div>
+                  <label className="text-zinc-400 block mb-1">Finnhub API Key (เสริม สำหรับงบการเงิน & โลโก้)</label>
+                  <input
+                    type="password"
+                    value={fhKeyDraft}
+                    onChange={(e) => setFhKeyDraft(e.target.value)}
+                    className="w-full bg-zinc-950 border border-zinc-800 rounded px-3 py-1.5 font-mono text-zinc-100"
+                    placeholder="ใส่ Key Finnhub"
+                  />
+                </div>
+              </div>
+              <div className="text-xs max-w-sm">
+                <label className="text-zinc-400 block mb-1">
+                  Twelve Data: จำนวนคำขอสูงสุดต่อนาที (ตาม Plan ของคุณ)
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  value={tdRateDraft}
+                  onChange={(e) => setTdRateDraft(e.target.value)}
+                  className="w-28 bg-zinc-950 border border-zinc-800 rounded px-3 py-1.5 font-mono text-zinc-100"
+                  placeholder="8"
+                />
+              </div>
+              <button
+                onClick={() => { commitKeys(); setShowSettings(false); }}
+                className="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 rounded text-xs text-white font-medium"
+              >
+                บันทึก API Keys
+              </button>
+            </div>
+          )}
+
+          <div className="px-4 border-b border-zinc-800 flex items-center justify-between gap-2 overflow-x-auto bg-zinc-950">
+            <div className="flex gap-1 py-2">
+              <button
+                onClick={() => setTab("portfolio")}
+                className={`flex items-center gap-2 px-3.5 py-1.5 rounded-md text-xs font-medium transition ${tab === "portfolio" ? "bg-blue-600 text-white font-bold" : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900"}`}
+              >
+                <Briefcase size={14} /> พอร์ตลงทุน (Multi-Portfolio)
+              </button>
+              <button
+                onClick={() => setTab("watchlist")}
+                className={`flex items-center gap-2 px-3.5 py-1.5 rounded-md text-xs font-medium transition ${tab === "watchlist" ? "bg-blue-600 text-white font-bold" : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900"}`}
+              >
+                <Radar size={14} /> Watchlist & Technical
+              </button>
+              <button
+                onClick={() => setTab("screener")}
+                className={`flex items-center gap-2 px-3.5 py-1.5 rounded-md text-xs font-medium transition ${tab === "screener" ? "bg-blue-600 text-white font-bold" : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900"}`}
+              >
+                <Zap size={14} /> 10x S-Curve Screener
+              </button>
+              <button
+                onClick={() => setTab("sector")}
+                className={`flex items-center gap-2 px-3.5 py-1.5 rounded-md text-xs font-medium transition ${tab === "sector" ? "bg-blue-600 text-white font-bold" : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900"}`}
+              >
+                <PieChart size={14} /> Sector Rotation
+              </button>
+            </div>
+          </div>
+
+          <div className="max-w-7xl mx-auto p-4 space-y-4">
+            {tab === "portfolio" && (
+              <PortfolioView tdKey={tdKey} dataMap={dataMap} loadSymbol={loadSymbol} />
+            )}
+
+            {tab === "watchlist" && (
+              <div className="space-y-4">
+                <WeeklyRecommendedPanel
+                  tdKey={tdKey}
+                  fhKey={fhKey}
+                  dataMap={dataMap}
+                  loadSymbol={loadSymbol}
+                  symbols={symbols}
+                  onAdd={addSymbol}
+                />
+
+                <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-3 flex flex-wrap items-center justify-between gap-3">
+                  <form
+                    onSubmit={(e) => { e.preventDefault(); addSymbol(input); }}
+                    className="flex items-center gap-2 flex-1 min-w-[240px]"
+                  >
+                    <input
+                      type="text"
+                      placeholder="เพิ่มหุ้นเข้า Watchlist เช่น TSLA, AAPL..."
+                      value={input}
+                      onChange={(e) => setInput(e.target.value)}
+                      className="bg-zinc-950 border border-zinc-800 rounded px-3 py-1.5 text-xs text-zinc-100 font-mono flex-1 uppercase"
+                    />
+                    <button type="submit" className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded text-xs font-medium text-white shrink-0">
+                      + เพิ่ม
+                    </button>
+                  </form>
+
+                  <div className="flex items-center gap-2">
+                    <div className="relative">
+                      <Search size={14} className="absolute left-2.5 top-2 text-zinc-500" />
+                      <input
+                        type="text"
+                        placeholder="ค้นหา Symbol หรือชื่อ..."
+                        value={watchlistSearch}
+                        onChange={(e) => setWatchlistSearch(e.target.value)}
+                        className="bg-zinc-950 border border-zinc-800 rounded pl-8 pr-2 py-1 text-xs text-zinc-100 w-36 focus:w-48 transition-all"
+                      />
+                    </div>
+                    <select
+                      value={watchlistTrendFilter}
+                      onChange={(e) => setWatchlistTrendFilter(e.target.value)}
+                      className="bg-zinc-950 border border-zinc-800 rounded px-2 py-1 text-xs text-zinc-300 font-mono"
+                    >
+                      <option value="ALL">ทุกเทรนด์</option>
+                      <option value="Uptrend">ขาขึ้น (Uptrend)</option>
+                      <option value="Downtrend">ขาลง (Downtrend)</option>
+                      <option value="Sideways">แกว่งตัว (Sideways)</option>
+                    </select>
+
+                    <button
+                      onClick={refreshAll}
+                      disabled={refreshCooldown > 0}
+                      className="px-3 py-1 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50 rounded text-xs text-zinc-300 flex items-center gap-1.5 shrink-0"
+                    >
+                      <RefreshCw size={13} className={refreshCooldown > 0 ? "animate-spin" : ""} />
+                      {refreshCooldown > 0 ? `${refreshCooldown}s` : "อัปเดตทั้งหมด"}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="space-y-3">
+                  {filteredWatchlistSymbols.map((sym) => (
+                    <TickerCard
+                      key={sym}
+                      symbol={sym}
+                      entry={dataMap[sym]}
+                      onRemove={removeSymbol}
+                      onRefresh={handleRefreshSymbol}
+                      onTimeframeChange={handleSymbolTimeframeChange}
+                    />
+                  ))}
+                  {filteredWatchlistSymbols.length === 0 && (
+                    <div className="text-center text-zinc-500 py-12 bg-zinc-900 border border-zinc-800 rounded-lg text-xs">
+                      ไม่พบรายการหุ้นตรงตามเงื่อนไขค้นหา
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {tab === "screener" && (
+              <div className="space-y-4">
+                {!fhKey.trim() && (
+                  <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 text-xs text-amber-300 flex items-start gap-2">
+                    <span>⚠️</span>
+                    <span>
+                      ยังไม่ได้ใส่ <strong>Finnhub API Key</strong> — ข้อมูลรายได้เติบโต (Revenue Growth), Gross Margin,
+                      Market Cap และคะแนน S-Curve บางส่วนจะแสดงเป็น "—" จนกว่าจะตั้งค่า Finnhub Key ในเมนู ⚙ ที่มุมขวาบน
+                    </span>
+                  </div>
+                )}
+
+                <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-4 flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <div className="font-semibold text-base flex items-center gap-2">
+                      <Zap className="text-amber-400" size={18} />
+                      Automated 10x-100x S-Curve Screener
+                    </div>
+                    <div className="text-xs text-zinc-400 mt-1">
+                      อัลกอริทึมสแกนปัจจัยพื้นฐาน (Finnhub) + เทคนิคัล (Twelve Data) คะแนนเต็ม 20 คะแนน
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-3 text-xs flex-wrap">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-zinc-400">ตัวกรอง:</span>
+                      <select
+                        value={screenerFilter}
+                        onChange={(e) => setScreenerFilter(e.target.value)}
+                        className="bg-zinc-950 border border-zinc-800 rounded px-2.5 py-1 text-zinc-200 font-mono"
+                      >
+                        <option value="ALL">ทั้งหมด ({symbols.length})</option>
+                        <option value="CANDIDATES">🔥 ตัวเต็ง S-Curve (16+ คะแนน)</option>
+                        <option value="WATCH">👀 น่าจับตา (11-15 คะแนน)</option>
+                        <option value="UNQUALIFIED">⚠️ ยังไม่เข้าเกณฑ์ (&lt;11 คะแนน)</option>
+                      </select>
+                    </div>
+
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-zinc-400">เรียงตาม:</span>
+                      <select
+                        value={screenerSort}
+                        onChange={(e) => setScreenerSort(e.target.value)}
+                        className="bg-zinc-950 border border-zinc-800 rounded px-2.5 py-1 text-zinc-200 font-mono"
+                      >
+                        <option value="SCORE">คะแนน S-Curve รวม</option>
+                        <option value="REV">อัตราการเติบโตรายได้ YoY</option>
+                        <option value="MARGIN">อัตรากำไรขั้นต้น (Gross Margin)</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="bg-zinc-900 border border-zinc-800 rounded-lg overflow-hidden divide-y divide-zinc-800">
+                  {sortedScreenerSymbols.map(({ symbol, entry }) => (
+                    <ScreenerRow key={symbol} symbol={symbol} entry={entry} />
+                  ))}
+                  {sortedScreenerSymbols.length === 0 && (
+                    <div className="text-center text-zinc-500 py-12 text-xs">
+                      ไม่พบรายการหุ้นที่ตรงกับเงื่อนไขตัวกรอง S-Curve
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {tab === "sector" && (
+              <SectorRotationView tdKey={tdKey} />
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>
