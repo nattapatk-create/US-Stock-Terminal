@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>US Stock Terminal v4.0 - Yahoo Finance Engine (Free 100% No API Key Required)</title>
+  <title>US Stock Terminal v3.0 Pro - Weekly Picks (10 Strong Bullish) & Multi-Portfolio</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -344,9 +344,10 @@
     const DEFAULT_TIMEFRAME = "1week";
 
     /* ============================================================
-       YAHOO FINANCE ENGINE (FREE 100% - NO API KEY REQUIRED)
+       DATA SOURCES & QUEUES
        ============================================================ */
-    const CORS_PROXY = "https://corsproxy.io/?";
+    const TD_BASE = "https://api.twelvedata.com";
+    const FH_BASE = "https://finnhub.io/api/v1";
     const DEFAULT_WATCHLIST = ["NVDA", "AAPL", "TSLA", "PLTR", "RKLB"];
     const MAX_SYMBOLS = 20;
 
@@ -380,8 +381,14 @@
       };
     }
 
-    let yfMinIntervalMs = 150; // Fast execution queue
-    const yfQueue = createQueue(() => yfMinIntervalMs);
+    let tdMinIntervalMs = 7700;
+    let fhMinIntervalMs = 1100;
+    function setTdRateLimit(callsPerMinute) {
+      const n = Number(callsPerMinute);
+      if (Number.isFinite(n) && n > 0) tdMinIntervalMs = Math.ceil(60000 / n);
+    }
+    const tdQueue = createQueue(() => tdMinIntervalMs);
+    const fhQueue = createQueue(() => fhMinIntervalMs);
 
     /* ---------------- storage helpers ---------------- */
     async function loadStore(key, fallback) {
@@ -401,7 +408,7 @@
     }
 
     function symbolCacheKey(symbol) {
-      return `us-dash-cache-yf-${symbol}`;
+      return `us-dash-cache-${symbol}`;
     }
     function loadCachedEntry(symbol) {
       try {
@@ -422,12 +429,12 @@
       }
     }
 
-    function yfCounterKey() {
-      return `yf-calls-${new Date().toISOString().slice(0, 10)}`;
+    function tdCounterKey() {
+      return `td-calls-${new Date().toISOString().slice(0, 10)}`;
     }
-    function bumpYfCalls() {
+    function bumpTdCalls() {
       try {
-        const k = yfCounterKey();
+        const k = tdCounterKey();
         const next = (parseInt(localStorage.getItem(k), 10) || 0) + 1;
         localStorage.setItem(k, String(next));
         return next;
@@ -435,9 +442,9 @@
         return null;
       }
     }
-    function getYfCallsToday() {
+    function getTdCallsToday() {
       try {
-        return parseInt(localStorage.getItem(yfCounterKey()), 10) || 0;
+        return parseInt(localStorage.getItem(tdCounterKey()), 10) || 0;
       } catch {
         return 0;
       }
@@ -572,67 +579,52 @@
     }
 
     /* ============================================================
-       YAHOO FINANCE API FETCHERS
+       API LAYER
        ============================================================ */
-    async function fetchYahooData(symbol, timeframe = "1week") {
-      return yfQueue(async () => {
-        bumpYfCalls();
-        const yfInterval = timeframe === "1day" ? "1d" : "1wk";
-        const yfRange = timeframe === "1day" ? "1y" : "5y";
-        const targetUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=${yfInterval}&range=${yfRange}`;
+    async function fetchSeries(symbol, tdKey, interval = "1week", outputsize = 220) {
+      return tdQueue(async () => {
+        bumpTdCalls();
+        const res = await fetch(`${TD_BASE}/time_series?symbol=${encodeURIComponent(symbol)}&interval=${interval}&outputsize=${outputsize}&apikey=${tdKey}`);
+        const data = await res.json();
+        if (!data.values) throw new Error(data.message || "ไม่พบข้อมูลราคาย้อนหลัง (Twelve Data)");
+        return data.values.slice().reverse().map((v) => ({
+          date: v.datetime, open: +v.open, high: +v.high, low: +v.low, close: +v.close, volume: +v.volume,
+        }));
+      });
+    }
 
-        const response = await fetch(`${CORS_PROXY}${encodeURIComponent(targetUrl)}`);
-        if (!response.ok) throw new Error(`Yahoo Finance Error (${response.status})`);
-        const data = await response.json();
-
-        const result = data?.chart?.result?.[0];
-        if (!result) throw new Error("ไม่พบข้อมูลหุ้นจาก Yahoo Finance");
-
-        const meta = result.meta || {};
-        const timestamps = result.timestamp || [];
-        const quotes = result.indicators?.quote?.[0] || {};
-
-        const series = [];
-        for (let i = 0; i < timestamps.length; i++) {
-          if (quotes.close[i] != null && quotes.open[i] != null) {
-            series.push({
-              date: new Date(timestamps[i] * 1000).toISOString().slice(0, 10),
-              open: +quotes.open[i],
-              high: +quotes.high[i],
-              low: +quotes.low[i],
-              close: +quotes.close[i],
-              volume: +quotes.volume[i] || 0,
-            });
-          }
-        }
-
-        if (series.length === 0) throw new Error("ไม่มีข้อมูลแท่งราคาประมวลผลได้");
-
-        const lastClose = series[series.length - 1].close || meta.regularMarketPrice;
-        const prevClose = meta.chartPreviousClose || meta.previousClose || (series.length > 1 ? series[series.length - 2].close : lastClose);
-        const pctChange = prevClose ? ((lastClose - prevClose) / prevClose) * 100 : 0;
-
-        const quote = {
-          close: lastClose,
-          percent_change: pctChange,
-          open: meta.regularMarketDayOpen || series[series.length - 1].open,
-          high: meta.regularMarketDayHigh || series[series.length - 1].high,
-          low: meta.regularMarketDayLow || series[series.length - 1].low,
-          previous_close: prevClose,
-          volume: meta.regularMarketVolume || series[series.length - 1].volume,
+    async function fetchQuote(symbol, tdKey) {
+      return tdQueue(async () => {
+        bumpTdCalls();
+        const res = await fetch(`${TD_BASE}/quote?symbol=${encodeURIComponent(symbol)}&apikey=${tdKey}`);
+        const data = await res.json();
+        if (data.status === "error" || !data.close) throw new Error(data.message || "ดึงราคาล่าสุดจาก Twelve Data ไม่สำเร็จ");
+        return {
+          close: +data.close,
+          percent_change: +data.percent_change,
+          open: +data.open,
+          high: +data.high,
+          low: +data.low,
+          previous_close: +data.previous_close,
+          volume: data.volume ? +data.volume : null,
         };
+      });
+    }
 
-        const profile = {
-          name: meta.shortName || meta.longName || symbol,
-          marketCapitalization: (meta.marketCap || 0) / 1e6,
-          logo: "",
-        };
+    async function fetchFundamentals(symbol, fhKey) {
+      if (!fhKey) return null;
+      return fhQueue(async () => {
+        const res = await fetch(`${FH_BASE}/stock/metric?symbol=${encodeURIComponent(symbol)}&metric=all&token=${fhKey}`);
+        const data = await res.json();
+        return data.metric || {};
+      });
+    }
 
-        const fundamentals = {
-          marketCapitalization: (meta.marketCap || 0) / 1e6,
-        };
-
-        return { quote, series, profile, fundamentals, timeframe };
+    async function fetchProfile(symbol, fhKey) {
+      if (!fhKey) return null;
+      return fhQueue(async () => {
+        const res = await fetch(`${FH_BASE}/stock/profile2?symbol=${encodeURIComponent(symbol)}&token=${fhKey}`);
+        return res.json();
       });
     }
 
@@ -918,11 +910,17 @@
       { symbol: "NEE", country: "US", sector: "Utilities", catalyst: "สาธารณูปโภคไฟฟ้าและพลังงานหมุนเวียนรายใหญ่ของสหรัฐฯ" }
     ];
 
+    // กำหนดการสแกน:
+    // 1. ครบ 10 ตัวก็พอ
+    // 2. Strong Bullish เท่านั้น (Uptrend + Strong Bullish Momentum)
+    // 3. ตั้ง Max Stocks Pool ไว้ที่ 1,000 หุ้น
+    // 4. สแกนจนเจอครบ 10 ตัวแล้วให้หยุดสแกนทันที (Fast Stop)
     const WEEKLY_PICK_COUNT = 10;
     const MAX_SCAN_POOL = 1000;
 
     function isWeeklyPickEligible(cls) {
       if (!cls) return false;
+      // ยึดเกณฑ์เดิม: ขาขึ้น (Uptrend) และ โมเมนตัมบวกแรงเท่านั้น (Strong Bullish Only!)
       return cls.trend === "Uptrend" && cls.momentum === "Strong Bullish";
     }
 
@@ -949,7 +947,7 @@
       return Array.from({ length: poolLen }, (_, i) => pool[(start + i) % poolLen]);
     }
 
-    function WeeklyRecommendedPanel({ dataMap, loadSymbol, symbols, onAdd }) {
+    function WeeklyRecommendedPanel({ tdKey, fhKey, dataMap, loadSymbol, symbols, onAdd }) {
       const [loading, setLoading] = useState(false);
       const [scanProgress, setScanProgress] = useState({ done: 0, total: 0, found: 0 });
       const dataMapRef = useRef(dataMap);
@@ -976,6 +974,7 @@
       }, []);
 
       const scanCandidates = useCallback(async () => {
+        if (!tdKey) return;
         setLoading(true);
         const rotationPool = today.rotation;
         setScanProgress({ done: 0, total: rotationPool.length, found: 0 });
@@ -984,6 +983,7 @@
           let doneCount = 0;
           let foundCount = 0;
 
+          // ตรวจสอบหุ้นที่มีข้อมูลอยู่ในเครื่องแล้วก่อน
           for (const item of rotationPool) {
             const cached = dataMapRef.current[item.symbol];
             if (cached && cached.series && cached.series.length >= 20) {
@@ -994,19 +994,22 @@
             }
           }
 
+          // หากพบครบ 10 ตัวแล้ว ไม่ต้องสแกนเพิ่ม
           if (foundCount >= WEEKLY_PICK_COUNT) {
             setScanProgress({ done: rotationPool.length, total: rotationPool.length, found: foundCount });
             return;
           }
 
+          // ไล่สแกนทีละตัว หากพบครบ 10 ตัวที่เข้าเกณฑ์ Strong Bullish + Uptrend ให้หยุดสแกนทันที
           for (const item of rotationPool) {
             if (foundCount >= WEEKLY_PICK_COUNT) {
-              console.log(`[Scanner] พบหุ้น Strong Bullish ครบ ${WEEKLY_PICK_COUNT} ตัวแล้ว หยุดสแกนทันที`);
+              console.log(`[Scanner] พบหุ้น Strong Bullish ครบ ${WEEKLY_PICK_COUNT} ตัวแล้ว หยุดการสแกนทันที`);
               break;
             }
 
             const cached = dataMapRef.current[item.symbol];
-            const alreadyFresh = cached && !cached.stale && cached.series && cached.series.length >= 20;
+            const needsFundamentals = !!fhKey && !cached?.fundamentals;
+            const alreadyFresh = cached && !cached.stale && cached.series && cached.series.length >= 20 && !needsFundamentals;
 
             if (!alreadyFresh) {
               await loadSymbol(item.symbol, true);
@@ -1026,11 +1029,11 @@
         } finally {
           setLoading(false);
         }
-      }, [today, loadSymbol]);
+      }, [tdKey, fhKey, today, loadSymbol]);
 
       useEffect(() => {
         scanCandidates();
-      }, [today.weekKey]);
+      }, [today.weekKey, tdKey, fhKey]);
 
       const recommended = useMemo(() => {
         const candidates = [];
@@ -1053,9 +1056,11 @@
           });
         }
 
+        // เรียงตามความแข็งแรงของสัญญาณ RSI & Trend Score
         const strength = (c) => c.cls.trendScore + (c.cls.rsi || 0) / 100;
         candidates.sort((a, b) => strength(b) - strength(a));
 
+        // กระจายหุ้นให้อยู่หลายภูมิภาค
         const regionsOrder = [...new Set(candidates.map((c) => c.region))];
         const picked = [];
         const usedSymbols = new Set();
@@ -1090,12 +1095,13 @@
             <div>
               <div className="flex items-center gap-2 text-amber-400 font-bold text-base">
                 <Zap className="fill-amber-400" size={18} />
-                <span>หุ้นแนะนำประจำสัปดาห์ 🌐 Yahoo Finance Engine ({WEEKLY_PICK_COUNT} ตัว)</span>
+                <span>หุ้นแนะนำประจำสัปดาห์ 🌐 ทั่วโลก (Strong Bullish Only - {WEEKLY_PICK_COUNT} ตัว)</span>
               </div>
               <div className="text-xs text-zinc-400 mt-0.5">
-                เกณฑ์: สแกนจากพูลหุ้นสูงสุด <strong className="text-zinc-200">1,000 ตัวทั่วโลก</strong> (Yahoo Free Engine - ไม่ต้องใช้ API Key) คัดเฉพาะหุ้นที่อยู่{" "}
+                เกณฑ์: คัดกรองจากพูลหุ้นสูงสุด <strong className="text-zinc-200">1,000 ตัวทั่วโลก</strong> ครอบคลุม{" "}
+                <strong className="text-zinc-200">Small / Mid / Large Cap</strong> ทุกภูมิภาค โดยยึดเฉพาะหุ้นที่เป็น{" "}
                 <strong className="text-emerald-400">ขาขึ้น (Uptrend)</strong> และ{" "}
-                <strong className="text-emerald-400">โมเมนตัมบวกแรง (Strong Bullish) เท่านั้น</strong> • เมื่อสแกนเจอครบ {WEEKLY_PICK_COUNT} ตัวจะหยุดสแกนทันที
+                <strong className="text-emerald-400">โมเมนตัมบวกแรง (Strong Bullish) เท่านั้น</strong> • เมื่อสแกนเจอครบ {WEEKLY_PICK_COUNT} ตัวจะหยุดสแกนทันที • เปลี่ยนชุดสแกนใหม่อัตโนมัติทุกสัปดาห์
               </div>
             </div>
             <div className="flex items-center gap-2">
@@ -1104,7 +1110,7 @@
               </span>
               <button
                 onClick={scanCandidates}
-                disabled={loading}
+                disabled={loading || !tdKey}
                 className="flex items-center gap-1.5 text-xs bg-zinc-900 border border-zinc-700 text-zinc-200 hover:bg-zinc-800 px-3 py-1 rounded-md font-medium transition disabled:opacity-50"
               >
                 <RefreshCw size={13} className={loading ? "animate-spin" : ""} />
@@ -1113,15 +1119,26 @@
             </div>
           </div>
 
+          {!tdKey && (
+            <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-2.5 text-[11px] text-amber-300 flex items-start gap-2">
+              <span>⚠️</span>
+              <span>
+                ต้องตั้งค่า <strong>Twelve Data API Key</strong> ก่อน จึงจะสแกนเพื่อหาหุ้นแนะนำประจำสัปดาห์ได้ — ตั้งค่าได้ที่เมนู ⚙ มุมขวาบน
+              </span>
+            </div>
+          )}
+
           {loading && (
             <div className="bg-zinc-950/80 border border-zinc-800 rounded-lg p-3 text-center text-xs text-amber-300 font-mono">
-              ⚡ กำลังสแกนจากพูลหุ้นทั่วโลก (Yahoo Engine)... พบแล้ว {scanProgress.found}/{WEEKLY_PICK_COUNT} ตัว (เช็กไปแล้ว {scanProgress.done} ตัว)
+              ⚡ กำลังสแกนจากพูลหุ้นทั่วโลก... พบแล้ว {scanProgress.found}/{WEEKLY_PICK_COUNT} ตัว (เช็กไปแล้ว {scanProgress.done} ตัว)
             </div>
           )}
 
           {!loading && recommended.length === 0 && (
             <div className="text-xs text-zinc-500 text-center py-6">
-              ยังไม่พบหุ้นที่ตรงเกณฑ์ Uptrend + Strong Bullish ในสัปดาห์นี้
+              {tdKey
+                ? "ยังไม่พบหุ้นที่ตรงเกณฑ์ Uptrend + Strong Bullish ในสัปดาห์นี้"
+                : "กรุณาตั้งค่า Twelve Data API Key เพื่อเริ่มใช้งานหุ้นแนะนำประจำสัปดาห์"}
             </div>
           )}
 
@@ -1214,7 +1231,7 @@
         return series.slice(-90).map((b, idx) => {
           const originalIdx = series.length - 90 + idx;
           return {
-            date: b.date.slice(0, 10),
+            date: b.date.slice(0, 16),
             close: b.close,
             ema200: e200Arr[originalIdx],
           };
@@ -1259,7 +1276,7 @@
     /* ============================================================
        MULTI-PORTFOLIO VIEW
        ============================================================ */
-    function PortfolioView({ dataMap, loadSymbol }) {
+    function PortfolioView({ tdKey, dataMap, loadSymbol }) {
       const [portfolios, setPortfolios] = useState([]);
       const [activePortId, setActivePortId] = useState("");
       const [newPortName, setNewPortName] = useState("");
@@ -1351,19 +1368,20 @@
       };
 
       const refreshPortfolioQuotes = useCallback(async () => {
+        if (!tdKey) return;
         const allSymbols = [...new Set(portfolios.flatMap((p) => (p.items || []).map((item) => item.symbol)))];
         if (allSymbols.length === 0) return;
 
         setLoadingQuotes(true);
         await Promise.all(allSymbols.map((s) => loadSymbol(s, false)));
         setLoadingQuotes(false);
-      }, [portfolios, loadSymbol]);
+      }, [portfolios, tdKey, loadSymbol]);
 
       useEffect(() => {
-        if (portfolios.length > 0) {
+        if (portfolios.length > 0 && tdKey) {
           refreshPortfolioQuotes();
         }
-      }, [portfolios.length]);
+      }, [portfolios.length, tdKey]);
 
       const handleTransaction = (e) => {
         e.preventDefault();
@@ -1408,7 +1426,7 @@
             });
           }
           updateActiveItems(updated);
-          loadSymbol(s, false);
+          if (tdKey) loadSymbol(s, false);
 
         } else if (actionType === "TRIM") {
           if (existingIndex < 0) {
@@ -1637,7 +1655,7 @@
                 className="flex items-center gap-1.5 text-xs text-blue-400 hover:text-blue-300 disabled:opacity-50"
               >
                 <RefreshCw size={13} className={loadingQuotes ? "animate-spin" : ""} />
-                อัปเดตราคาราคาเรียลไทม์ (Yahoo Engine)
+                อัปเดตราคาราคาเรียลไทม์ (Twelve Data)
               </button>
             </div>
 
@@ -2192,7 +2210,7 @@
                   <AlertTriangle size={14} className="shrink-0 mt-0.5" /> <span>{error}</span>
                 </div>
               )}
-              {loading && !series && <div className="text-zinc-500 text-sm py-8 text-center">กำลังโหลดข้อมูลกราฟ Timeframe {tfObj.name} จาก Yahoo Finance…</div>}
+              {loading && !series && <div className="text-zinc-500 text-sm py-8 text-center">กำลังโหลดข้อมูลกราฟ Timeframe {tfObj.name} จาก Twelve Data…</div>}
 
               {analysis && (
                 <>
@@ -2203,9 +2221,9 @@
                     <span className={`text-xs font-medium px-2 py-1 rounded border ${MOM_STYLE[analysis.cls.momentum]}`}>
                       โมเมนตัม: {MOM_TH[analysis.cls.momentum]}
                     </span>
-                    {profile?.marketCapitalization > 0 && (
+                    {profile?.marketCapitalization && (
                       <span className="text-xs font-mono px-2 py-1 rounded border border-zinc-700 text-zinc-400">
-                        Mkt Cap ${fmtBig(profile.marketCapitalization * 1e6)} (Yahoo)
+                        Mkt Cap ${fmtBig(profile.marketCapitalization * 1e6)} (Finnhub)
                       </span>
                     )}
                   </div>
@@ -2254,7 +2272,7 @@
     /* ============================================================
        SECTOR ROTATION VIEW
        ============================================================ */
-    function SectorRotationView() {
+    function SectorRotationView({ tdKey }) {
       const [sectorData, setSectorData] = useState([]);
       const [loading, setLoading] = useState(false);
       const [progress, setProgress] = useState(0);
@@ -2264,6 +2282,10 @@
       const [sortAsc, setSortAsc] = useState(false);
 
       const scanSectors = useCallback(async () => {
+        if (!tdKey || !tdKey.trim()) {
+          setError("โปรดใส่ Twelve Data API key ในเมนู ⚙ เพื่อเริ่มการสแกนอัตโนมัติ");
+          return;
+        }
         setLoading(true);
         setError(null);
         setProgress(0);
@@ -2273,8 +2295,7 @@
 
         try {
           try {
-            const spyData = await fetchYahooData("SPY", "1week");
-            spySeries = spyData.series;
+            spySeries = await fetchSeries("SPY", tdKey, "1week", 70);
           } catch (e) {
             console.warn("Couldn't fetch SPY, using absolute sector metrics.");
           }
@@ -2290,8 +2311,7 @@
             setProgress(Math.round(((i + 1) / SECTOR_ETFS.length) * 100));
 
             try {
-              const secData = await fetchYahooData(sec.symbol, "1week");
-              const series = secData.series;
+              const series = await fetchSeries(sec.symbol, tdKey, "1week", 70);
               if (series && series.length >= 12) {
                 const len = series.length;
                 const pNow = series[len - 1].close;
@@ -2331,24 +2351,24 @@
 
           results.sort((a, b) => b.score - a.score);
           setSectorData(results);
-          saveStore("us-dash-sector-data-yf", results);
+          saveStore("us-dash-sector-data", results);
         } catch (e) {
           setError(e.message || "เกิดข้อผิดพลาดในการโหลดข้อมูล Sector");
         } finally {
           setLoading(false);
         }
-      }, []);
+      }, [tdKey]);
 
       useEffect(() => {
-        loadStore("us-dash-sector-data-yf", []).then((cached) => {
+        loadStore("us-dash-sector-data", []).then((cached) => {
           if (cached && cached.length) setSectorData(cached);
         });
 
-        if (!sectorAutoScanned) {
+        if (tdKey && tdKey.trim() && !sectorAutoScanned) {
           sectorAutoScanned = true;
           scanSectors();
         }
-      }, [scanSectors]);
+      }, [tdKey, scanSectors]);
 
       const sortedSectorData = useMemo(() => {
         return [...sectorData].sort((a, b) => {
@@ -2388,7 +2408,7 @@
             <div>
               <div className="font-semibold text-base flex items-center gap-2">
                 <PieChart className="text-emerald-400" size={18} />
-                Sector Rotation Radar (Yahoo Realtime Engine)
+                Sector Rotation Radar (Twelve Data Realtime)
               </div>
               <div className="text-xs text-zinc-400 mt-1">
                 เปรียบเทียบความแข็งแกร่งสัมพัทธ์ (Relative Strength) ของ 11 Sectors เทียบกับ S&P 500 (SPY)
@@ -2508,7 +2528,7 @@
               </div>
             ) : sortedSectorData.length === 0 ? (
               <div className="text-center text-zinc-500 py-8 text-xs">
-                ไม่พบข้อมูล โปรดกดปุ่มสแกน
+                ไม่พบข้อมูล โปรดตรวจสอบ API Key ในเมนู ⚙ แล้วกดปุ่มสแกน
               </div>
             ) : (
               <table className="w-full text-left text-xs font-mono">
@@ -2568,9 +2588,9 @@
        ============================================================ */
     const S_CURVE_RULES = [
       { key: "s1", label: "1. S-Curve & Runway", desc: "เทรนด์ใหญ่โลกเลี่ยงไม่ได้ + อยู่ต้น S-Curve ลู่วิ่งโต 5-10 ปี" },
-      { key: "s2", label: "2. Scalable Moat", desc: "ยิ่งโตยิ่งต้นทุนถูกลง + คูเมืองปกป้องธุรกิจ" },
+      { key: "s2", label: "2. Scalable Moat", desc: "ยิ่งโตยิ่งต้นทุนถูกลง + คูเมืองปกป้องธุรกิจ (Gross Margin สูง)" },
       { key: "s3", label: "3. Founder-Driven", desc: "บริหารด้วย Founder DNA กล้าเดิมพัน เน้นการเติบโตเชิงรุก" },
-      { key: "s4", label: "4. Reality & Catalyst", desc: "ลูกค้ายอมจ่ายเงินจริง + มี Catalyst ทางเทคนิคเร่งราคา" },
+      { key: "s4", label: "4. Reality & Catalyst", desc: "ลูกค้ายอมจ่ายเงินจริง (รายได้โต) + มี Catalyst เร่งราคา" },
     ];
 
     function calculateAutoSCurve(entry) {
@@ -2579,38 +2599,60 @@
       if (!series || series.length < 20) return null;
 
       const cls = classify(series);
+      
+      const rawRevGrowth = pick(fundamentals, ["revenueGrowthTTMYoy", "revenueGrowth3Y", "revenueGrowthQuarterlyYoy"]);
+      const revGrowthPct = rawRevGrowth == null ? null : (Math.abs(rawRevGrowth) < 3 ? rawRevGrowth * 100 : rawRevGrowth);
+
+      const rawGrossMargin = pick(fundamentals, ["grossMarginTTM", "grossMarginAnnual"]);
+      const grossMarginPct = rawGrossMargin == null ? null : (Math.abs(rawGrossMargin) < 3 ? rawGrossMargin * 100 : rawGrossMargin);
+
       const mktCap = (pick(fundamentals, ["marketCapitalization"]) || profile?.marketCapitalization || 0) * 1e6;
       const mktCapB = mktCap / 1e9;
 
       let s1 = 0;
       let s1Notes = [];
-      if (mktCapB > 0 && mktCapB <= 20) { s1 += 3; s1Notes.push(`Mkt Cap $${mktCapB.toFixed(1)}B (ลู่วิ่งยาว)`); }
-      else if (mktCapB > 20 && mktCapB <= 100) { s1 += 2; s1Notes.push(`Mkt Cap $${mktCapB.toFixed(1)}B (Mid-Cap)`); }
-      if (cls.trend === "Uptrend") { s1 += 2; s1Notes.push("กราฟ Uptrend หนุนเทรนด์ใหญ่"); }
+      if (revGrowthPct != null) {
+        if (revGrowthPct >= 35) { s1 += 2; s1Notes.push(`รายได้โตจัด ${revGrowthPct.toFixed(1)}% YoY (Finnhub)`); }
+        else if (revGrowthPct >= 15) { s1 += 1; s1Notes.push(`รายได้เติบโตดี ${revGrowthPct.toFixed(1)}% YoY (Finnhub)`); }
+      }
+      if (mktCapB > 0 && mktCapB <= 20) { s1 += 2; s1Notes.push(`Mkt Cap $${mktCapB.toFixed(1)}B (ลู่วิ่งยาว)`); }
+      else if (mktCapB > 20 && mktCapB <= 100) { s1 += 1; s1Notes.push(`Mkt Cap $${mktCapB.toFixed(1)}B (Mid-Cap)`); }
+      if (cls.trend === "Uptrend") { s1 += 1; s1Notes.push("กราฟ Uptrend หนุนเทรนด์ใหญ่ (TD)"); }
       s1 = Math.min(5, s1);
 
       let s2 = 0;
       let s2Notes = [];
-      if (cls.rsi > 60) { s2 += 3; s2Notes.push("แรงซื้อต่อเนื่อง แสดงคูเมืองเชิงการแข่งขัน"); }
-      else { s2 += 2; s2Notes.push("การเติบโตระดับอุตสาหกรรม"); }
+      if (grossMarginPct != null) {
+        if (grossMarginPct >= 65) { s2 += 3; s2Notes.push(`Gross Margin สูงมาก ${grossMarginPct.toFixed(1)}% (Finnhub)`); }
+        else if (grossMarginPct >= 45) { s2 += 2; s2Notes.push(`Gross Margin แข็งแกร่ง ${grossMarginPct.toFixed(1)}% (Finnhub)`); }
+        else if (grossMarginPct >= 25) { s2 += 1; s2Notes.push(`Gross Margin ${grossMarginPct.toFixed(1)}% (Finnhub)`); }
+      } else { s2 += 1; }
+      if (revGrowthPct != null && revGrowthPct > 20 && grossMarginPct > 50) {
+        s2 += 2; s2Notes.push("Scalable Moat (รายได้โตขนาน Margin สูง)");
+      } else if (grossMarginPct > 40) {
+        s2 += 1; s2Notes.push("มี Pricing Power จาก Gross Margin");
+      }
       s2 = Math.min(5, s2);
 
       let s3 = 0;
       let s3Notes = [];
-      if (mktCapB > 0 && mktCapB <= 50) { s3 += 3; s3Notes.push("โครงสร้างคล่องตัวสไตล์ Founder"); } else { s3 += 2; }
+      if (revGrowthPct != null && revGrowthPct >= 25) { s3 += 2; s3Notes.push("กล้าเดิมพัน R&D/การเติบโตเชิงรุก"); }
+      if (mktCapB > 0 && mktCapB <= 50) { s3 += 2; s3Notes.push("โครงสร้างคล่องตัวสไตล์ Founder"); } else { s3 += 1; }
       if (cls.momentum === "Strong Bullish" || cls.momentum === "Bullish") {
-        s3 += 2; s3Notes.push("โมเมนตัมบริหารเชิงรุก");
+        s3 += 1; s3Notes.push("วิสัยทัศน์ผู้บริหารหนุนความเชื่อมั่น (TD)");
       }
       s3 = Math.min(5, s3);
 
       let s4 = 0;
       let s4Notes = [];
-      if (cls.trend === "Uptrend") { s4 += 3; s4Notes.push("มี Catalyst ทางเทคนิค Uptrend"); }
-      if (cls.momentum === "Strong Bullish") { s4 += 2; s4Notes.push("แรงซื้อโมเมนตัมบวกแรง 🔥"); }
+      if (revGrowthPct != null && revGrowthPct > 0) { s4 += 2; s4Notes.push("มีลูกค้ายอมจ่ายเงินจริง (รายได้เป็นบวก)"); }
+      if (cls.trend === "Uptrend") { s4 += 2; s4Notes.push("มี Catalyst ทางเทคนิค Uptrend (TD)"); }
+      else if (cls.momentum === "Bullish" || cls.momentum === "Strong Bullish") { s4 += 1; s4Notes.push("แรงซื้อโมเมนตัมฟื้นตัว (TD)"); }
+      if (cls.rsi > 50) { s4 += 1; s4Notes.push("RSI > 50 ตลาดเริ่มให้มูลค่า (TD)"); }
       s4 = Math.min(5, s4);
 
       const total = s1 + s2 + s3 + s4;
-      return { s1, s2, s3, s4, total, notes: { s1: s1Notes, s2: s2Notes, s3: s3Notes, s4: s4Notes }, mktCapB };
+      return { s1, s2, s3, s4, total, notes: { s1: s1Notes, s2: s2Notes, s3: s3Notes, s4: s4Notes }, revGrowthPct, grossMarginPct, mktCapB };
     }
 
     function autoVerdict(total) {
@@ -2653,8 +2695,9 @@
             </div>
 
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] sm:text-xs font-mono text-zinc-400 flex-1 min-w-[180px]">
+              <span>รายได้โต: <strong className={evalData?.revGrowthPct >= 20 ? "text-emerald-400" : "text-zinc-200"}>{evalData?.revGrowthPct != null ? `${evalData.revGrowthPct.toFixed(1)}%` : "—"}</strong></span>
+              <span>Margin: <strong className={evalData?.grossMarginPct >= 50 ? "text-emerald-400" : "text-zinc-200"}>{evalData?.grossMarginPct != null ? `${evalData.grossMarginPct.toFixed(1)}%` : "—"}</strong></span>
               <span>Mkt Cap: <strong className="text-zinc-200">{evalData?.mktCapB ? `$${evalData.mktCapB.toFixed(1)}B` : "—"}</strong></span>
-              <span>RSI: <strong className="text-emerald-400">{cls?.rsi ? cls.rsi.toFixed(1) : "—"}</strong></span>
             </div>
 
             {cls && (
@@ -2677,20 +2720,26 @@
             <div className="px-4 pb-4 pt-2 bg-zinc-950/60 border-t border-zinc-800/60 space-y-3">
               <div className="text-xs text-zinc-400 flex items-center justify-between">
                 <span>📊 ข้อมูลพื้นฐานหลัก (Key Fundamentals)</span>
-                <span className="font-mono text-[11px] text-zinc-500">ที่มา: Yahoo Finance Engine</span>
+                <span className="font-mono text-[11px] text-zinc-500">ที่มา: Finnhub / Twelve Data</span>
               </div>
 
-              <div className="grid grid-cols-2 gap-2.5">
+              <div className="grid grid-cols-3 gap-2.5">
+                <div className="bg-zinc-900 border border-zinc-800 rounded p-3">
+                  <div className="text-[10px] text-zinc-500 mb-1">รายได้เติบโต YoY (Revenue Growth)</div>
+                  <div className={`font-mono font-bold text-base sm:text-lg ${evalData.revGrowthPct >= 20 ? "text-emerald-400" : "text-zinc-100"}`}>
+                    {evalData.revGrowthPct != null ? `${evalData.revGrowthPct.toFixed(1)}%` : "—"}
+                  </div>
+                </div>
+                <div className="bg-zinc-900 border border-zinc-800 rounded p-3">
+                  <div className="text-[10px] text-zinc-500 mb-1">Gross Margin</div>
+                  <div className={`font-mono font-bold text-base sm:text-lg ${evalData.grossMarginPct >= 50 ? "text-emerald-400" : "text-zinc-100"}`}>
+                    {evalData.grossMarginPct != null ? `${evalData.grossMarginPct.toFixed(1)}%` : "—"}
+                  </div>
+                </div>
                 <div className="bg-zinc-900 border border-zinc-800 rounded p-3">
                   <div className="text-[10px] text-zinc-500 mb-1">Market Cap</div>
                   <div className="font-mono font-bold text-base sm:text-lg text-zinc-100">
                     {evalData.mktCapB ? `$${evalData.mktCapB.toFixed(1)}B` : "—"}
-                  </div>
-                </div>
-                <div className="bg-zinc-900 border border-zinc-800 rounded p-3">
-                  <div className="text-[10px] text-zinc-500 mb-1">สถานะเทรนด์ & โมเมนตัม</div>
-                  <div className="font-mono font-bold text-xs sm:text-sm text-emerald-400">
-                    {cls?.trend} / {cls?.momentum}
                   </div>
                 </div>
               </div>
@@ -2746,13 +2795,18 @@
       useEffect(() => {
         dataMapRef.current = dataMap;
       }, [dataMap]);
-      
+      const [tdKey, setTdKey] = useState("");
+      const [fhKey, setFhKey] = useState("");
+      const [tdKeyDraft, setTdKeyDraft] = useState("");
+      const [fhKeyDraft, setFhKeyDraft] = useState("");
+      const [tdRatePerMin, setTdRatePerMin] = useState(8);
+      const [tdRateDraft, setTdRateDraft] = useState("8");
       const [showSettings, setShowSettings] = useState(false);
       const [tab, setTab] = useState("watchlist");
       const [input, setInput] = useState("");
       const [booted, setBooted] = useState(false);
       const [refreshCooldown, setRefreshCooldown] = useState(0);
-      const [yfCallsToday, setYfCallsToday] = useState(0);
+      const [tdCallsToday, setTdCallsToday] = useState(0);
       const cooldownRef = useRef(null);
 
       const [screenerFilter, setScreenerFilter] = useState("ALL");
@@ -2764,7 +2818,18 @@
 
       useEffect(() => {
         (async () => {
-          const wl = await loadStore("us-dash-watchlist", DEFAULT_WATCHLIST);
+          const [keys, wl] = await Promise.all([
+            loadStore("us-dash-keys", { td: "", fh: "", tdRate: 8 }),
+            loadStore("us-dash-watchlist", DEFAULT_WATCHLIST),
+          ]);
+          setTdKey(keys.td || "");
+          setFhKey(keys.fh || "");
+          setTdKeyDraft(keys.td || "");
+          setFhKeyDraft(keys.fh || "");
+          const rate = keys.tdRate || 8;
+          setTdRatePerMin(rate);
+          setTdRateDraft(String(rate));
+          setTdRateLimit(rate);
           setSymbols(wl);
 
           const cachedMap = {};
@@ -2781,7 +2846,7 @@
       }, []);
 
       useEffect(() => {
-        const tick = () => setYfCallsToday(getYfCallsToday());
+        const tick = () => setTdCallsToday(getTdCallsToday());
         tick();
         const id = setInterval(tick, 3000);
         return () => clearInterval(id);
@@ -2794,31 +2859,70 @@
       const loadSymbol = useCallback(async (symbol, full = true, timeframe = DEFAULT_TIMEFRAME) => {
         setEntry(symbol, { loading: true, error: null });
         try {
-          const yfData = await fetchYahooData(symbol, timeframe);
-          setEntry(symbol, {
-            quote: yfData.quote,
-            series: yfData.series,
-            profile: yfData.profile,
-            fundamentals: yfData.fundamentals,
-            timeframe,
-            loading: false,
-            error: null,
-            stale: false,
-          });
-          saveCachedEntry(symbol, yfData);
+          const key = tdKey.trim();
+          const fh = fhKey.trim();
+          if (!key) throw new Error("ยังไม่ได้ใส่ Twelve Data API key (ตั้งค่า ⚙)");
+
+          const fhPromise = (full && fh)
+            ? Promise.all([fetchFundamentals(symbol, fh), fetchProfile(symbol, fh)]).catch((fhErr) => {
+                console.warn(`Finnhub error for ${symbol}:`, fhErr);
+                return null;
+              })
+            : null;
+
+          const quote = await fetchQuote(symbol, key);
+          setEntry(symbol, { quote, loading: full, error: null, stale: false });
+
+          if (full) {
+            const series = await fetchSeries(symbol, key, timeframe);
+            setEntry(symbol, { series, timeframe, loading: false, stale: false });
+            saveCachedEntry(symbol, { quote, series, timeframe });
+
+            if (fhPromise) {
+              const fhResult = await fhPromise;
+              if (fhResult) {
+                const [fundamentals, profile] = fhResult;
+                setEntry(symbol, { fundamentals, profile });
+                saveCachedEntry(symbol, { quote, series, timeframe, fundamentals, profile });
+              }
+            }
+          } else {
+            setEntry(symbol, { loading: false });
+          }
         } catch (e) {
           setEntry(symbol, { loading: false, error: e.message || "โหลดข้อมูลไม่สำเร็จ" });
         }
-      }, [setEntry]);
+      }, [tdKey, fhKey, setEntry]);
+
+      const loadSeries = useCallback(async (symbol, timeframe) => {
+        setEntry(symbol, { loading: true, error: null });
+        try {
+          const key = tdKey.trim();
+          if (!key) throw new Error("ยังไม่ได้ใส่ Twelve Data API key (ตั้งค่า ⚙)");
+          const series = await fetchSeries(symbol, key, timeframe);
+          setEntry(symbol, { series, timeframe, loading: false, error: null, stale: false });
+          const existing = dataMapRef.current[symbol] || {};
+          saveCachedEntry(symbol, {
+            quote: existing.quote,
+            series,
+            timeframe,
+            fundamentals: existing.fundamentals,
+            profile: existing.profile,
+          });
+        } catch (e) {
+          setEntry(symbol, { loading: false, error: e.message || "โหลดข้อมูลไม่สำเร็จ" });
+        }
+      }, [tdKey, setEntry]);
 
       useEffect(() => {
-        if (!booted) return;
+        if (!booted || !tdKey.trim()) return;
         symbols.forEach((s) => loadSymbol(s, true, dataMapRef.current[s]?.timeframe || DEFAULT_TIMEFRAME));
-      }, [booted]);
+      }, [booted, tdKey, fhKey]);
 
       const handleSymbolTimeframeChange = useCallback((symbol, tf) => {
-        loadSymbol(symbol, true, tf);
-      }, [loadSymbol]);
+        if (dataMapRef.current[symbol]?.quote) loadSeries(symbol, tf);
+        else loadSymbol(symbol, true, tf);
+      }, [loadSeries, loadSymbol]);
 
       const handleRefreshSymbol = useCallback((s) => {
         loadSymbol(s, true, dataMapRef.current[s]?.timeframe || DEFAULT_TIMEFRAME);
@@ -2831,8 +2935,8 @@
         setSymbols(next);
         saveStore("us-dash-watchlist", next);
         setInput("");
-        loadSymbol(s, true, DEFAULT_TIMEFRAME);
-      }, [symbols, loadSymbol]);
+        if (tdKey.trim()) loadSymbol(s, true, DEFAULT_TIMEFRAME);
+      }, [symbols, tdKey, loadSymbol]);
 
       const removeSymbol = useCallback((s) => {
         setSymbols((prev) => {
@@ -2845,7 +2949,7 @@
       const refreshAll = useCallback(() => {
         if (refreshCooldown > 0) return;
         symbols.forEach((s) => loadSymbol(s, true, dataMapRef.current[s]?.timeframe || DEFAULT_TIMEFRAME));
-        setRefreshCooldown(5);
+        setRefreshCooldown(20);
         cooldownRef.current = setInterval(() => {
           setRefreshCooldown((c) => {
             if (c <= 1) { clearInterval(cooldownRef.current); return 0; }
@@ -2854,18 +2958,31 @@
         }, 1000);
       }, [refreshCooldown, symbols, loadSymbol]);
 
+      const commitKeys = () => {
+        const td = tdKeyDraft.trim();
+        const fh = fhKeyDraft.trim();
+        const rate = Math.max(1, parseInt(tdRateDraft, 10) || 8);
+        if (td !== tdKey) setTdKey(td);
+        if (fh !== fhKey) setFhKey(fh);
+        setTdRatePerMin(rate);
+        setTdRateDraft(String(rate));
+        setTdRateLimit(rate);
+        saveStore("us-dash-keys", { td, fh, tdRate: rate });
+      };
+
       const exportBackup = () => {
         const data = {
           portfolios: JSON.parse(localStorage.getItem("us-dash-portfolios-v3") || "[]"),
           watchlist: JSON.parse(localStorage.getItem("us-dash-watchlist") || "[]"),
-          version: "4.0.0-yf",
+          keys: JSON.parse(localStorage.getItem("us-dash-keys") || "{}"),
+          version: "3.0.0",
           exportDate: new Date().toISOString()
         };
         const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
-        a.download = `us-stock-terminal-yf-backup-${new Date().toISOString().slice(0, 10)}.json`;
+        a.download = `us-stock-terminal-backup-${new Date().toISOString().slice(0, 10)}.json`;
         a.click();
         URL.revokeObjectURL(url);
       };
@@ -2881,6 +2998,17 @@
             if (parsed.watchlist) {
               saveStore("us-dash-watchlist", parsed.watchlist);
               setSymbols(parsed.watchlist);
+            }
+            if (parsed.keys) {
+              saveStore("us-dash-keys", parsed.keys);
+              setTdKey(parsed.keys.td || "");
+              setFhKey(parsed.keys.fh || "");
+              setTdKeyDraft(parsed.keys.td || "");
+              setFhKeyDraft(parsed.keys.fh || "");
+              const rate = parsed.keys.tdRate || 8;
+              setTdRatePerMin(rate);
+              setTdRateDraft(String(rate));
+              setTdRateLimit(rate);
             }
             alert("นำเข้าข้อมูลสำรองสำเร็จเรียบร้อย!");
             window.location.reload();
@@ -2906,7 +3034,16 @@
           list = list.filter((item) => item.totalScore < 11);
         }
 
-        list.sort((a, b) => b.totalScore - a.totalScore);
+        list.sort((a, b) => {
+          if (screenerSort === "REV") {
+            return (b.evalData?.revGrowthPct ?? -999) - (a.evalData?.revGrowthPct ?? -999);
+          }
+          if (screenerSort === "MARGIN") {
+            return (b.evalData?.grossMarginPct ?? -999) - (a.evalData?.grossMarginPct ?? -999);
+          }
+          return b.totalScore - a.totalScore;
+        });
+
         return list;
       }, [symbols, dataMap, screenerFilter, screenerSort]);
 
@@ -2934,13 +3071,15 @@
             <Radar size={20} className="text-blue-400" />
             <div>
               <div className="font-semibold text-sm flex items-center gap-2">
-                US Stock Terminal <span className="text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 px-1.5 py-0.5 rounded font-mono">v4.0 Yahoo Engine</span>
+                US Stock Terminal <span className="text-[10px] bg-blue-500/20 text-blue-300 border border-blue-500/40 px-1.5 py-0.5 rounded font-mono">v3.0 Pro</span>
               </div>
-              <div className="text-[11px] text-zinc-500 font-sans">Yahoo Finance Engine • Free 100% (No API Key Required)</div>
+              <div className="text-[11px] text-zinc-500 font-sans">Twelve Data (ราคา & กราฟ) | Finnhub (งบการเงิน & โลโก้)</div>
             </div>
             <div className="ml-auto flex items-center gap-2">
               <span className="text-xs font-mono text-zinc-400 border border-zinc-800 bg-zinc-900 px-2 py-1 rounded">
-                Yahoo Requests Today: <strong className="text-emerald-400">{yfCallsToday}</strong>
+                TD Calls Today: <strong className="text-blue-400">{tdCallsToday}</strong>
+                <span className="text-zinc-600 mx-1.5">|</span>
+                {tdRatePerMin}/นาที
               </span>
               <button
                 onClick={exportBackup}
@@ -2953,8 +3092,61 @@
                 <Upload size={13} /> นำเข้าข้อมูล
                 <input type="file" accept=".json" onChange={importBackup} className="hidden" />
               </label>
+              <button
+                onClick={() => setShowSettings((s) => !s)}
+                className="p-1.5 rounded hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 border border-zinc-800 bg-zinc-900"
+              >
+                <Settings size={16} />
+              </button>
             </div>
           </div>
+
+          {showSettings && (
+            <div className="p-4 bg-zinc-900 border-b border-zinc-800 space-y-3">
+              <div className="text-xs font-semibold text-zinc-200">⚙️ การตั้งค่า API Key</div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                <div>
+                  <label className="text-zinc-400 block mb-1">Twelve Data API Key (หลัก สำหรับราคา & กราฟ)</label>
+                  <input
+                    type="password"
+                    value={tdKeyDraft}
+                    onChange={(e) => setTdKeyDraft(e.target.value)}
+                    className="w-full bg-zinc-950 border border-zinc-800 rounded px-3 py-1.5 font-mono text-zinc-100"
+                    placeholder="ใส่ Key Twelve Data"
+                  />
+                </div>
+                <div>
+                  <label className="text-zinc-400 block mb-1">Finnhub API Key (เสริม สำหรับงบการเงิน & โลโก้)</label>
+                  <input
+                    type="password"
+                    value={fhKeyDraft}
+                    onChange={(e) => setFhKeyDraft(e.target.value)}
+                    className="w-full bg-zinc-950 border border-zinc-800 rounded px-3 py-1.5 font-mono text-zinc-100"
+                    placeholder="ใส่ Key Finnhub"
+                  />
+                </div>
+              </div>
+              <div className="text-xs max-w-sm">
+                <label className="text-zinc-400 block mb-1">
+                  Twelve Data: จำนวนคำขอสูงสุดต่อนาที (ตาม Plan ของคุณ)
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  value={tdRateDraft}
+                  onChange={(e) => setTdRateDraft(e.target.value)}
+                  className="w-28 bg-zinc-950 border border-zinc-800 rounded px-3 py-1.5 font-mono text-zinc-100"
+                  placeholder="8"
+                />
+              </div>
+              <button
+                onClick={() => { commitKeys(); setShowSettings(false); }}
+                className="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 rounded text-xs text-white font-medium"
+              >
+                บันทึก API Keys
+              </button>
+            </div>
+          )}
 
           <div className="px-4 border-b border-zinc-800 flex items-center justify-between gap-2 overflow-x-auto bg-zinc-950">
             <div className="flex gap-1 py-2">
@@ -2987,12 +3179,14 @@
 
           <div className="max-w-7xl mx-auto p-4 space-y-4">
             {tab === "portfolio" && (
-              <PortfolioView dataMap={dataMap} loadSymbol={loadSymbol} />
+              <PortfolioView tdKey={tdKey} dataMap={dataMap} loadSymbol={loadSymbol} />
             )}
 
             {tab === "watchlist" && (
               <div className="space-y-4">
                 <WeeklyRecommendedPanel
+                  tdKey={tdKey}
+                  fhKey={fhKey}
                   dataMap={dataMap}
                   loadSymbol={loadSymbol}
                   symbols={symbols}
@@ -3071,6 +3265,16 @@
 
             {tab === "screener" && (
               <div className="space-y-4">
+                {!fhKey.trim() && (
+                  <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 text-xs text-amber-300 flex items-start gap-2">
+                    <span>⚠️</span>
+                    <span>
+                      ยังไม่ได้ใส่ <strong>Finnhub API Key</strong> — ข้อมูลรายได้เติบโต (Revenue Growth), Gross Margin,
+                      Market Cap และคะแนน S-Curve บางส่วนจะแสดงเป็น "—" จนกว่าจะตั้งค่า Finnhub Key ในเมนู ⚙ ที่มุมขวาบน
+                    </span>
+                  </div>
+                )}
+
                 <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-4 flex flex-wrap items-center justify-between gap-3">
                   <div>
                     <div className="font-semibold text-base flex items-center gap-2">
@@ -3078,7 +3282,7 @@
                       Automated 10x-100x S-Curve Screener
                     </div>
                     <div className="text-xs text-zinc-400 mt-1">
-                      อัลกอริทึมสแกนปัจจัยพื้นฐาน + เทคนิคัล (Yahoo Finance Free Engine) คะแนนเต็ม 20 คะแนน
+                      อัลกอริทึมสแกนปัจจัยพื้นฐาน (Finnhub) + เทคนิคัล (Twelve Data) คะแนนเต็ม 20 คะแนน
                     </div>
                   </div>
 
@@ -3094,6 +3298,19 @@
                         <option value="CANDIDATES">🔥 ตัวเต็ง S-Curve (16+ คะแนน)</option>
                         <option value="WATCH">👀 น่าจับตา (11-15 คะแนน)</option>
                         <option value="UNQUALIFIED">⚠️ ยังไม่เข้าเกณฑ์ (&lt;11 คะแนน)</option>
+                      </select>
+                    </div>
+
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-zinc-400">เรียงตาม:</span>
+                      <select
+                        value={screenerSort}
+                        onChange={(e) => setScreenerSort(e.target.value)}
+                        className="bg-zinc-950 border border-zinc-800 rounded px-2.5 py-1 text-zinc-200 font-mono"
+                      >
+                        <option value="SCORE">คะแนน S-Curve รวม</option>
+                        <option value="REV">อัตราการเติบโตรายได้ YoY</option>
+                        <option value="MARGIN">อัตรากำไรขั้นต้น (Gross Margin)</option>
                       </select>
                     </div>
                   </div>
@@ -3113,7 +3330,7 @@
             )}
 
             {tab === "sector" && (
-              <SectorRotationView />
+              <SectorRotationView tdKey={tdKey} />
             )}
           </div>
         </div>
