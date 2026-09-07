@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>US Stock Terminal v3.0 Pro - Weekly Picks (10 Strong Bullish) & Multi-Portfolio</title>
+  <title>US Stock Terminal v3.5 Pro - Finnhub High Speed Engine (60 req/min)</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -174,7 +174,7 @@
       BIDU: { name: "Baidu, Inc. (China)", domain: "baidu.com" },
       TME: { name: "Tencent Music Entertainment Group (China)", domain: "tencentmusic.com" },
       YUMC: { name: "Yum China Holdings, Inc. (China)", domain: "yumchina.com" },
-      BEKE: { name: "KE Holdings Inc. (China)", domain: "ke.com" },
+      BEKE: { name: "KE Holdings Inc. (China)", fontDomain: "ke.com" },
       FUTU: { name: "Futu Holdings Limited (China)", domain: "futuholdings.com" },
       UMC: { name: "United Microelectronics Corp. (Taiwan)", domain: "umc.com" },
       CHT: { name: "Chunghwa Telecom Co., Ltd. (Taiwan)", domain: "cht.com.tw" },
@@ -344,9 +344,8 @@
     const DEFAULT_TIMEFRAME = "1week";
 
     /* ============================================================
-       DATA SOURCES & QUEUES
+       FINNHUB API ENGINE (60 REQUESTS/MIN FREE TIER)
        ============================================================ */
-    const TD_BASE = "https://api.twelvedata.com";
     const FH_BASE = "https://finnhub.io/api/v1";
     const DEFAULT_WATCHLIST = ["NVDA", "AAPL", "TSLA", "PLTR", "RKLB"];
     const MAX_SYMBOLS = 20;
@@ -381,13 +380,11 @@
       };
     }
 
-    let tdMinIntervalMs = 7700;
-    let fhMinIntervalMs = 1100;
-    function setTdRateLimit(callsPerMinute) {
+    let fhMinIntervalMs = 1000; // 60 requests/min = 1,000ms delay per call
+    function setFhRateLimit(callsPerMinute) {
       const n = Number(callsPerMinute);
-      if (Number.isFinite(n) && n > 0) tdMinIntervalMs = Math.ceil(60000 / n);
+      if (Number.isFinite(n) && n > 0) fhMinIntervalMs = Math.ceil(60000 / n);
     }
-    const tdQueue = createQueue(() => tdMinIntervalMs);
     const fhQueue = createQueue(() => fhMinIntervalMs);
 
     /* ---------------- storage helpers ---------------- */
@@ -408,7 +405,7 @@
     }
 
     function symbolCacheKey(symbol) {
-      return `us-dash-cache-${symbol}`;
+      return `us-dash-cache-fh-${symbol}`;
     }
     function loadCachedEntry(symbol) {
       try {
@@ -429,12 +426,12 @@
       }
     }
 
-    function tdCounterKey() {
-      return `td-calls-${new Date().toISOString().slice(0, 10)}`;
+    function fhCounterKey() {
+      return `fh-calls-${new Date().toISOString().slice(0, 10)}`;
     }
-    function bumpTdCalls() {
+    function bumpFhCalls() {
       try {
-        const k = tdCounterKey();
+        const k = fhCounterKey();
         const next = (parseInt(localStorage.getItem(k), 10) || 0) + 1;
         localStorage.setItem(k, String(next));
         return next;
@@ -442,9 +439,9 @@
         return null;
       }
     }
-    function getTdCallsToday() {
+    function getFhCallsToday() {
       try {
-        return parseInt(localStorage.getItem(tdCounterKey()), 10) || 0;
+        return parseInt(localStorage.getItem(fhCounterKey()), 10) || 0;
       } catch {
         return 0;
       }
@@ -579,34 +576,48 @@
     }
 
     /* ============================================================
-       API LAYER
+       API LAYER (FINNHUB HIGH SPEED ENGINE)
        ============================================================ */
-    async function fetchSeries(symbol, tdKey, interval = "1week", outputsize = 220) {
-      return tdQueue(async () => {
-        bumpTdCalls();
-        const res = await fetch(`${TD_BASE}/time_series?symbol=${encodeURIComponent(symbol)}&interval=${interval}&outputsize=${outputsize}&apikey=${tdKey}`);
-        const data = await res.json();
-        if (!data.values) throw new Error(data.message || "ไม่พบข้อมูลราคาย้อนหลัง (Twelve Data)");
-        return data.values.slice().reverse().map((v) => ({
-          date: v.datetime, open: +v.open, high: +v.high, low: +v.low, close: +v.close, volume: +v.volume,
+    async function fetchSeries(symbol, fhKey, interval = "1week", count = 220) {
+      return fhQueue(async () => {
+        bumpFhCalls();
+        const res = interval === "1day" ? "D" : "W";
+        const toSec = Math.floor(Date.now() / 1000);
+        const daysBack = interval === "1day" ? count * 1.5 : count * 7;
+        const fromSec = toSec - Math.floor(daysBack * 86400);
+
+        const response = await fetch(`${FH_BASE}/stock/candle?symbol=${encodeURIComponent(symbol)}&resolution=${res}&from=${fromSec}&to=${toSec}&token=${fhKey}`);
+        const data = await response.json();
+        
+        if (data.s !== "ok" || !data.c || data.c.length === 0) {
+          throw new Error(data.error || "ไม่พบข้อมูลกราฟราคาย้อนหลังจาก Finnhub");
+        }
+
+        return data.t.map((timestamp, i) => ({
+          date: new Date(timestamp * 1000).toISOString().slice(0, 10),
+          open: +data.o[i],
+          high: +data.h[i],
+          low: +data.l[i],
+          close: +data.c[i],
+          volume: +data.v[i]
         }));
       });
     }
 
-    async function fetchQuote(symbol, tdKey) {
-      return tdQueue(async () => {
-        bumpTdCalls();
-        const res = await fetch(`${TD_BASE}/quote?symbol=${encodeURIComponent(symbol)}&apikey=${tdKey}`);
-        const data = await res.json();
-        if (data.status === "error" || !data.close) throw new Error(data.message || "ดึงราคาล่าสุดจาก Twelve Data ไม่สำเร็จ");
+    async function fetchQuote(symbol, fhKey) {
+      return fhQueue(async () => {
+        bumpFhCalls();
+        const response = await fetch(`${FH_BASE}/quote?symbol=${encodeURIComponent(symbol)}&token=${fhKey}`);
+        const data = await response.json();
+        if (!data || data.c === 0) throw new Error("ดึงราคาล่าสุดจาก Finnhub ไม่สำเร็จ");
         return {
-          close: +data.close,
-          percent_change: +data.percent_change,
-          open: +data.open,
-          high: +data.high,
-          low: +data.low,
-          previous_close: +data.previous_close,
-          volume: data.volume ? +data.volume : null,
+          close: +data.c,
+          percent_change: +data.dp,
+          open: +data.o,
+          high: +data.h,
+          low: +data.l,
+          previous_close: +data.pc,
+          volume: null,
         };
       });
     }
@@ -614,6 +625,7 @@
     async function fetchFundamentals(symbol, fhKey) {
       if (!fhKey) return null;
       return fhQueue(async () => {
+        bumpFhCalls();
         const res = await fetch(`${FH_BASE}/stock/metric?symbol=${encodeURIComponent(symbol)}&metric=all&token=${fhKey}`);
         const data = await res.json();
         return data.metric || {};
@@ -623,6 +635,7 @@
     async function fetchProfile(symbol, fhKey) {
       if (!fhKey) return null;
       return fhQueue(async () => {
+        bumpFhCalls();
         const res = await fetch(`${FH_BASE}/stock/profile2?symbol=${encodeURIComponent(symbol)}&token=${fhKey}`);
         return res.json();
       });
@@ -910,17 +923,11 @@
       { symbol: "NEE", country: "US", sector: "Utilities", catalyst: "สาธารณูปโภคไฟฟ้าและพลังงานหมุนเวียนรายใหญ่ของสหรัฐฯ" }
     ];
 
-    // กำหนดการสแกน:
-    // 1. ครบ 10 ตัวก็พอ
-    // 2. Strong Bullish เท่านั้น (Uptrend + Strong Bullish Momentum)
-    // 3. ตั้ง Max Stocks Pool ไว้ที่ 1,000 หุ้น
-    // 4. สแกนจนเจอครบ 10 ตัวแล้วให้หยุดสแกนทันที (Fast Stop)
     const WEEKLY_PICK_COUNT = 10;
     const MAX_SCAN_POOL = 1000;
 
     function isWeeklyPickEligible(cls) {
       if (!cls) return false;
-      // ยึดเกณฑ์เดิม: ขาขึ้น (Uptrend) และ โมเมนตัมบวกแรงเท่านั้น (Strong Bullish Only!)
       return cls.trend === "Uptrend" && cls.momentum === "Strong Bullish";
     }
 
@@ -947,7 +954,7 @@
       return Array.from({ length: poolLen }, (_, i) => pool[(start + i) % poolLen]);
     }
 
-    function WeeklyRecommendedPanel({ tdKey, fhKey, dataMap, loadSymbol, symbols, onAdd }) {
+    function WeeklyRecommendedPanel({ fhKey, dataMap, loadSymbol, symbols, onAdd }) {
       const [loading, setLoading] = useState(false);
       const [scanProgress, setScanProgress] = useState({ done: 0, total: 0, found: 0 });
       const dataMapRef = useRef(dataMap);
@@ -974,7 +981,7 @@
       }, []);
 
       const scanCandidates = useCallback(async () => {
-        if (!tdKey) return;
+        if (!fhKey) return;
         setLoading(true);
         const rotationPool = today.rotation;
         setScanProgress({ done: 0, total: rotationPool.length, found: 0 });
@@ -983,7 +990,6 @@
           let doneCount = 0;
           let foundCount = 0;
 
-          // ตรวจสอบหุ้นที่มีข้อมูลอยู่ในเครื่องแล้วก่อน
           for (const item of rotationPool) {
             const cached = dataMapRef.current[item.symbol];
             if (cached && cached.series && cached.series.length >= 20) {
@@ -994,22 +1000,19 @@
             }
           }
 
-          // หากพบครบ 10 ตัวแล้ว ไม่ต้องสแกนเพิ่ม
           if (foundCount >= WEEKLY_PICK_COUNT) {
             setScanProgress({ done: rotationPool.length, total: rotationPool.length, found: foundCount });
             return;
           }
 
-          // ไล่สแกนทีละตัว หากพบครบ 10 ตัวที่เข้าเกณฑ์ Strong Bullish + Uptrend ให้หยุดสแกนทันที
           for (const item of rotationPool) {
             if (foundCount >= WEEKLY_PICK_COUNT) {
-              console.log(`[Scanner] พบหุ้น Strong Bullish ครบ ${WEEKLY_PICK_COUNT} ตัวแล้ว หยุดการสแกนทันที`);
+              console.log(`[Scanner] พบหุ้น Strong Bullish ครบ ${WEEKLY_PICK_COUNT} ตัวแล้ว หยุดสแกนทันที`);
               break;
             }
 
             const cached = dataMapRef.current[item.symbol];
-            const needsFundamentals = !!fhKey && !cached?.fundamentals;
-            const alreadyFresh = cached && !cached.stale && cached.series && cached.series.length >= 20 && !needsFundamentals;
+            const alreadyFresh = cached && !cached.stale && cached.series && cached.series.length >= 20;
 
             if (!alreadyFresh) {
               await loadSymbol(item.symbol, true);
@@ -1029,11 +1032,11 @@
         } finally {
           setLoading(false);
         }
-      }, [tdKey, fhKey, today, loadSymbol]);
+      }, [fhKey, today, loadSymbol]);
 
       useEffect(() => {
         scanCandidates();
-      }, [today.weekKey, tdKey, fhKey]);
+      }, [today.weekKey, fhKey]);
 
       const recommended = useMemo(() => {
         const candidates = [];
@@ -1056,11 +1059,9 @@
           });
         }
 
-        // เรียงตามความแข็งแรงของสัญญาณ RSI & Trend Score
         const strength = (c) => c.cls.trendScore + (c.cls.rsi || 0) / 100;
         candidates.sort((a, b) => strength(b) - strength(a));
 
-        // กระจายหุ้นให้อยู่หลายภูมิภาค
         const regionsOrder = [...new Set(candidates.map((c) => c.region))];
         const picked = [];
         const usedSymbols = new Set();
@@ -1095,13 +1096,12 @@
             <div>
               <div className="flex items-center gap-2 text-amber-400 font-bold text-base">
                 <Zap className="fill-amber-400" size={18} />
-                <span>หุ้นแนะนำประจำสัปดาห์ 🌐 ทั่วโลก (Strong Bullish Only - {WEEKLY_PICK_COUNT} ตัว)</span>
+                <span>หุ้นแนะนำประจำสัปดาห์ 🌐 Finnhub High Speed ({WEEKLY_PICK_COUNT} ตัว)</span>
               </div>
               <div className="text-xs text-zinc-400 mt-0.5">
-                เกณฑ์: คัดกรองจากพูลหุ้นสูงสุด <strong className="text-zinc-200">1,000 ตัวทั่วโลก</strong> ครอบคลุม{" "}
-                <strong className="text-zinc-200">Small / Mid / Large Cap</strong> ทุกภูมิภาค โดยยึดเฉพาะหุ้นที่เป็น{" "}
+                เกณฑ์: สแกนจากพูลหุ้นสูงสุด <strong className="text-zinc-200">1,000 ตัวทั่วโลก</strong> (ความเร็ว 60 req/นาที) คัดเฉพาะหุ้นที่อยู่{" "}
                 <strong className="text-emerald-400">ขาขึ้น (Uptrend)</strong> และ{" "}
-                <strong className="text-emerald-400">โมเมนตัมบวกแรง (Strong Bullish) เท่านั้น</strong> • เมื่อสแกนเจอครบ {WEEKLY_PICK_COUNT} ตัวจะหยุดสแกนทันที • เปลี่ยนชุดสแกนใหม่อัตโนมัติทุกสัปดาห์
+                <strong className="text-emerald-400">โมเมนตัมบวกแรง (Strong Bullish) เท่านั้น</strong> • เมื่อสแกนเจอครบ {WEEKLY_PICK_COUNT} ตัวจะหยุดสแกนทันที
               </div>
             </div>
             <div className="flex items-center gap-2">
@@ -1110,7 +1110,7 @@
               </span>
               <button
                 onClick={scanCandidates}
-                disabled={loading || !tdKey}
+                disabled={loading || !fhKey}
                 className="flex items-center gap-1.5 text-xs bg-zinc-900 border border-zinc-700 text-zinc-200 hover:bg-zinc-800 px-3 py-1 rounded-md font-medium transition disabled:opacity-50"
               >
                 <RefreshCw size={13} className={loading ? "animate-spin" : ""} />
@@ -1119,26 +1119,26 @@
             </div>
           </div>
 
-          {!tdKey && (
+          {!fhKey && (
             <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-2.5 text-[11px] text-amber-300 flex items-start gap-2">
               <span>⚠️</span>
               <span>
-                ต้องตั้งค่า <strong>Twelve Data API Key</strong> ก่อน จึงจะสแกนเพื่อหาหุ้นแนะนำประจำสัปดาห์ได้ — ตั้งค่าได้ที่เมนู ⚙ มุมขวาบน
+                ต้องตั้งค่า <strong>Finnhub API Key</strong> ก่อน จึงจะสแกนเพื่อหาหุ้นแนะนำประจำสัปดาห์ได้ — ตั้งค่าได้ที่เมนู ⚙ มุมขวาบน
               </span>
             </div>
           )}
 
           {loading && (
             <div className="bg-zinc-950/80 border border-zinc-800 rounded-lg p-3 text-center text-xs text-amber-300 font-mono">
-              ⚡ กำลังสแกนจากพูลหุ้นทั่วโลก... พบแล้ว {scanProgress.found}/{WEEKLY_PICK_COUNT} ตัว (เช็กไปแล้ว {scanProgress.done} ตัว)
+              ⚡ กำลังสแกนความเร็วสูงจากพูลหุ้นทั่วโลก (Finnhub Engine)... พบแล้ว {scanProgress.found}/{WEEKLY_PICK_COUNT} ตัว (เช็กไปแล้ว {scanProgress.done} ตัว)
             </div>
           )}
 
           {!loading && recommended.length === 0 && (
             <div className="text-xs text-zinc-500 text-center py-6">
-              {tdKey
+              {fhKey
                 ? "ยังไม่พบหุ้นที่ตรงเกณฑ์ Uptrend + Strong Bullish ในสัปดาห์นี้"
-                : "กรุณาตั้งค่า Twelve Data API Key เพื่อเริ่มใช้งานหุ้นแนะนำประจำสัปดาห์"}
+                : "กรุณาตั้งค่า Finnhub API Key เพื่อเริ่มใช้งานหุ้นแนะนำประจำสัปดาห์"}
             </div>
           )}
 
@@ -1231,7 +1231,7 @@
         return series.slice(-90).map((b, idx) => {
           const originalIdx = series.length - 90 + idx;
           return {
-            date: b.date.slice(0, 16),
+            date: b.date.slice(0, 10),
             close: b.close,
             ema200: e200Arr[originalIdx],
           };
@@ -1276,7 +1276,7 @@
     /* ============================================================
        MULTI-PORTFOLIO VIEW
        ============================================================ */
-    function PortfolioView({ tdKey, dataMap, loadSymbol }) {
+    function PortfolioView({ fhKey, dataMap, loadSymbol }) {
       const [portfolios, setPortfolios] = useState([]);
       const [activePortId, setActivePortId] = useState("");
       const [newPortName, setNewPortName] = useState("");
@@ -1368,20 +1368,20 @@
       };
 
       const refreshPortfolioQuotes = useCallback(async () => {
-        if (!tdKey) return;
+        if (!fhKey) return;
         const allSymbols = [...new Set(portfolios.flatMap((p) => (p.items || []).map((item) => item.symbol)))];
         if (allSymbols.length === 0) return;
 
         setLoadingQuotes(true);
         await Promise.all(allSymbols.map((s) => loadSymbol(s, false)));
         setLoadingQuotes(false);
-      }, [portfolios, tdKey, loadSymbol]);
+      }, [portfolios, fhKey, loadSymbol]);
 
       useEffect(() => {
-        if (portfolios.length > 0 && tdKey) {
+        if (portfolios.length > 0 && fhKey) {
           refreshPortfolioQuotes();
         }
-      }, [portfolios.length, tdKey]);
+      }, [portfolios.length, fhKey]);
 
       const handleTransaction = (e) => {
         e.preventDefault();
@@ -1426,7 +1426,7 @@
             });
           }
           updateActiveItems(updated);
-          if (tdKey) loadSymbol(s, false);
+          if (fhKey) loadSymbol(s, false);
 
         } else if (actionType === "TRIM") {
           if (existingIndex < 0) {
@@ -1655,7 +1655,7 @@
                 className="flex items-center gap-1.5 text-xs text-blue-400 hover:text-blue-300 disabled:opacity-50"
               >
                 <RefreshCw size={13} className={loadingQuotes ? "animate-spin" : ""} />
-                อัปเดตราคาราคาเรียลไทม์ (Twelve Data)
+                อัปเดตราคาราคาเรียลไทม์ (Finnhub)
               </button>
             </div>
 
@@ -2210,7 +2210,7 @@
                   <AlertTriangle size={14} className="shrink-0 mt-0.5" /> <span>{error}</span>
                 </div>
               )}
-              {loading && !series && <div className="text-zinc-500 text-sm py-8 text-center">กำลังโหลดข้อมูลกราฟ Timeframe {tfObj.name} จาก Twelve Data…</div>}
+              {loading && !series && <div className="text-zinc-500 text-sm py-8 text-center">กำลังโหลดข้อมูลกราฟ Timeframe {tfObj.name} จาก Finnhub…</div>}
 
               {analysis && (
                 <>
@@ -2272,7 +2272,7 @@
     /* ============================================================
        SECTOR ROTATION VIEW
        ============================================================ */
-    function SectorRotationView({ tdKey }) {
+    function SectorRotationView({ fhKey }) {
       const [sectorData, setSectorData] = useState([]);
       const [loading, setLoading] = useState(false);
       const [progress, setProgress] = useState(0);
@@ -2282,8 +2282,8 @@
       const [sortAsc, setSortAsc] = useState(false);
 
       const scanSectors = useCallback(async () => {
-        if (!tdKey || !tdKey.trim()) {
-          setError("โปรดใส่ Twelve Data API key ในเมนู ⚙ เพื่อเริ่มการสแกนอัตโนมัติ");
+        if (!fhKey || !fhKey.trim()) {
+          setError("โปรดใส่ Finnhub API Key ในเมนู ⚙ เพื่อเริ่มการสแกนอัตโนมัติ");
           return;
         }
         setLoading(true);
@@ -2295,7 +2295,7 @@
 
         try {
           try {
-            spySeries = await fetchSeries("SPY", tdKey, "1week", 70);
+            spySeries = await fetchSeries("SPY", fhKey, "1week", 70);
           } catch (e) {
             console.warn("Couldn't fetch SPY, using absolute sector metrics.");
           }
@@ -2311,7 +2311,7 @@
             setProgress(Math.round(((i + 1) / SECTOR_ETFS.length) * 100));
 
             try {
-              const series = await fetchSeries(sec.symbol, tdKey, "1week", 70);
+              const series = await fetchSeries(sec.symbol, fhKey, "1week", 70);
               if (series && series.length >= 12) {
                 const len = series.length;
                 const pNow = series[len - 1].close;
@@ -2351,24 +2351,24 @@
 
           results.sort((a, b) => b.score - a.score);
           setSectorData(results);
-          saveStore("us-dash-sector-data", results);
+          saveStore("us-dash-sector-data-fh", results);
         } catch (e) {
           setError(e.message || "เกิดข้อผิดพลาดในการโหลดข้อมูล Sector");
         } finally {
           setLoading(false);
         }
-      }, [tdKey]);
+      }, [fhKey]);
 
       useEffect(() => {
-        loadStore("us-dash-sector-data", []).then((cached) => {
+        loadStore("us-dash-sector-data-fh", []).then((cached) => {
           if (cached && cached.length) setSectorData(cached);
         });
 
-        if (tdKey && tdKey.trim() && !sectorAutoScanned) {
+        if (fhKey && fhKey.trim() && !sectorAutoScanned) {
           sectorAutoScanned = true;
           scanSectors();
         }
-      }, [tdKey, scanSectors]);
+      }, [fhKey, scanSectors]);
 
       const sortedSectorData = useMemo(() => {
         return [...sectorData].sort((a, b) => {
@@ -2408,7 +2408,7 @@
             <div>
               <div className="font-semibold text-base flex items-center gap-2">
                 <PieChart className="text-emerald-400" size={18} />
-                Sector Rotation Radar (Twelve Data Realtime)
+                Sector Rotation Radar (Finnhub Realtime Engine)
               </div>
               <div className="text-xs text-zinc-400 mt-1">
                 เปรียบเทียบความแข็งแกร่งสัมพัทธ์ (Relative Strength) ของ 11 Sectors เทียบกับ S&P 500 (SPY)
@@ -2612,20 +2612,20 @@
       let s1 = 0;
       let s1Notes = [];
       if (revGrowthPct != null) {
-        if (revGrowthPct >= 35) { s1 += 2; s1Notes.push(`รายได้โตจัด ${revGrowthPct.toFixed(1)}% YoY (Finnhub)`); }
-        else if (revGrowthPct >= 15) { s1 += 1; s1Notes.push(`รายได้เติบโตดี ${revGrowthPct.toFixed(1)}% YoY (Finnhub)`); }
+        if (revGrowthPct >= 35) { s1 += 2; s1Notes.push(`รายได้โตจัด ${revGrowthPct.toFixed(1)}% YoY`); }
+        else if (revGrowthPct >= 15) { s1 += 1; s1Notes.push(`รายได้เติบโตดี ${revGrowthPct.toFixed(1)}% YoY`); }
       }
       if (mktCapB > 0 && mktCapB <= 20) { s1 += 2; s1Notes.push(`Mkt Cap $${mktCapB.toFixed(1)}B (ลู่วิ่งยาว)`); }
       else if (mktCapB > 20 && mktCapB <= 100) { s1 += 1; s1Notes.push(`Mkt Cap $${mktCapB.toFixed(1)}B (Mid-Cap)`); }
-      if (cls.trend === "Uptrend") { s1 += 1; s1Notes.push("กราฟ Uptrend หนุนเทรนด์ใหญ่ (TD)"); }
+      if (cls.trend === "Uptrend") { s1 += 1; s1Notes.push("กราฟ Uptrend หนุนเทรนด์ใหญ่"); }
       s1 = Math.min(5, s1);
 
       let s2 = 0;
       let s2Notes = [];
       if (grossMarginPct != null) {
-        if (grossMarginPct >= 65) { s2 += 3; s2Notes.push(`Gross Margin สูงมาก ${grossMarginPct.toFixed(1)}% (Finnhub)`); }
-        else if (grossMarginPct >= 45) { s2 += 2; s2Notes.push(`Gross Margin แข็งแกร่ง ${grossMarginPct.toFixed(1)}% (Finnhub)`); }
-        else if (grossMarginPct >= 25) { s2 += 1; s2Notes.push(`Gross Margin ${grossMarginPct.toFixed(1)}% (Finnhub)`); }
+        if (grossMarginPct >= 65) { s2 += 3; s2Notes.push(`Gross Margin สูงมาก ${grossMarginPct.toFixed(1)}%`); }
+        else if (grossMarginPct >= 45) { s2 += 2; s2Notes.push(`Gross Margin แข็งแกร่ง ${grossMarginPct.toFixed(1)}%`); }
+        else if (grossMarginPct >= 25) { s2 += 1; s2Notes.push(`Gross Margin ${grossMarginPct.toFixed(1)}%`); }
       } else { s2 += 1; }
       if (revGrowthPct != null && revGrowthPct > 20 && grossMarginPct > 50) {
         s2 += 2; s2Notes.push("Scalable Moat (รายได้โตขนาน Margin สูง)");
@@ -2639,16 +2639,16 @@
       if (revGrowthPct != null && revGrowthPct >= 25) { s3 += 2; s3Notes.push("กล้าเดิมพัน R&D/การเติบโตเชิงรุก"); }
       if (mktCapB > 0 && mktCapB <= 50) { s3 += 2; s3Notes.push("โครงสร้างคล่องตัวสไตล์ Founder"); } else { s3 += 1; }
       if (cls.momentum === "Strong Bullish" || cls.momentum === "Bullish") {
-        s3 += 1; s3Notes.push("วิสัยทัศน์ผู้บริหารหนุนความเชื่อมั่น (TD)");
+        s3 += 1; s3Notes.push("วิสัยทัศน์ผู้บริหารหนุนความเชื่อมั่น");
       }
       s3 = Math.min(5, s3);
 
       let s4 = 0;
       let s4Notes = [];
       if (revGrowthPct != null && revGrowthPct > 0) { s4 += 2; s4Notes.push("มีลูกค้ายอมจ่ายเงินจริง (รายได้เป็นบวก)"); }
-      if (cls.trend === "Uptrend") { s4 += 2; s4Notes.push("มี Catalyst ทางเทคนิค Uptrend (TD)"); }
-      else if (cls.momentum === "Bullish" || cls.momentum === "Strong Bullish") { s4 += 1; s4Notes.push("แรงซื้อโมเมนตัมฟื้นตัว (TD)"); }
-      if (cls.rsi > 50) { s4 += 1; s4Notes.push("RSI > 50 ตลาดเริ่มให้มูลค่า (TD)"); }
+      if (cls.trend === "Uptrend") { s4 += 2; s4Notes.push("มี Catalyst ทางเทคนิค Uptrend"); }
+      else if (cls.momentum === "Bullish" || cls.momentum === "Strong Bullish") { s4 += 1; s4Notes.push("แรงซื้อโมเมนตัมฟื้นตัว"); }
+      if (cls.rsi > 50) { s4 += 1; s4Notes.push("RSI > 50 ตลาดเริ่มให้มูลค่า"); }
       s4 = Math.min(5, s4);
 
       const total = s1 + s2 + s3 + s4;
@@ -2720,7 +2720,7 @@
             <div className="px-4 pb-4 pt-2 bg-zinc-950/60 border-t border-zinc-800/60 space-y-3">
               <div className="text-xs text-zinc-400 flex items-center justify-between">
                 <span>📊 ข้อมูลพื้นฐานหลัก (Key Fundamentals)</span>
-                <span className="font-mono text-[11px] text-zinc-500">ที่มา: Finnhub / Twelve Data</span>
+                <span className="font-mono text-[11px] text-zinc-500">ที่มา: Finnhub API</span>
               </div>
 
               <div className="grid grid-cols-3 gap-2.5">
@@ -2795,18 +2795,17 @@
       useEffect(() => {
         dataMapRef.current = dataMap;
       }, [dataMap]);
-      const [tdKey, setTdKey] = useState("");
+      
       const [fhKey, setFhKey] = useState("");
-      const [tdKeyDraft, setTdKeyDraft] = useState("");
       const [fhKeyDraft, setFhKeyDraft] = useState("");
-      const [tdRatePerMin, setTdRatePerMin] = useState(8);
-      const [tdRateDraft, setTdRateDraft] = useState("8");
+      const [fhRatePerMin, setFhRatePerMin] = useState(60);
+      const [fhRateDraft, setFhRateDraft] = useState("60");
       const [showSettings, setShowSettings] = useState(false);
       const [tab, setTab] = useState("watchlist");
       const [input, setInput] = useState("");
       const [booted, setBooted] = useState(false);
       const [refreshCooldown, setRefreshCooldown] = useState(0);
-      const [tdCallsToday, setTdCallsToday] = useState(0);
+      const [fhCallsToday, setFhCallsToday] = useState(0);
       const cooldownRef = useRef(null);
 
       const [screenerFilter, setScreenerFilter] = useState("ALL");
@@ -2819,17 +2818,15 @@
       useEffect(() => {
         (async () => {
           const [keys, wl] = await Promise.all([
-            loadStore("us-dash-keys", { td: "", fh: "", tdRate: 8 }),
+            loadStore("us-dash-keys-fh", { fh: "", fhRate: 60 }),
             loadStore("us-dash-watchlist", DEFAULT_WATCHLIST),
           ]);
-          setTdKey(keys.td || "");
           setFhKey(keys.fh || "");
-          setTdKeyDraft(keys.td || "");
           setFhKeyDraft(keys.fh || "");
-          const rate = keys.tdRate || 8;
-          setTdRatePerMin(rate);
-          setTdRateDraft(String(rate));
-          setTdRateLimit(rate);
+          const rate = keys.fhRate || 60;
+          setFhRatePerMin(rate);
+          setFhRateDraft(String(rate));
+          setFhRateLimit(rate);
           setSymbols(wl);
 
           const cachedMap = {};
@@ -2846,7 +2843,7 @@
       }, []);
 
       useEffect(() => {
-        const tick = () => setTdCallsToday(getTdCallsToday());
+        const tick = () => setFhCallsToday(getFhCallsToday());
         tick();
         const id = setInterval(tick, 3000);
         return () => clearInterval(id);
@@ -2859,24 +2856,22 @@
       const loadSymbol = useCallback(async (symbol, full = true, timeframe = DEFAULT_TIMEFRAME) => {
         setEntry(symbol, { loading: true, error: null });
         try {
-          const key = tdKey.trim();
           const fh = fhKey.trim();
-          if (!key) throw new Error("ยังไม่ได้ใส่ Twelve Data API key (ตั้งค่า ⚙)");
+          if (!fh) throw new Error("ยังไม่ได้ใส่ Finnhub API Key (ตั้งค่า ⚙)");
 
-          const fhPromise = (full && fh)
+          const fhPromise = full
             ? Promise.all([fetchFundamentals(symbol, fh), fetchProfile(symbol, fh)]).catch((fhErr) => {
-                console.warn(`Finnhub error for ${symbol}:`, fhErr);
+                console.warn(`Finnhub Profile/Metrics error for ${symbol}:`, fhErr);
                 return null;
               })
             : null;
 
-          const quote = await fetchQuote(symbol, key);
+          const quote = await fetchQuote(symbol, fh);
           setEntry(symbol, { quote, loading: full, error: null, stale: false });
 
           if (full) {
-            const series = await fetchSeries(symbol, key, timeframe);
+            const series = await fetchSeries(symbol, fh, timeframe);
             setEntry(symbol, { series, timeframe, loading: false, stale: false });
-            saveCachedEntry(symbol, { quote, series, timeframe });
 
             if (fhPromise) {
               const fhResult = await fhPromise;
@@ -2885,6 +2880,15 @@
                 setEntry(symbol, { fundamentals, profile });
                 saveCachedEntry(symbol, { quote, series, timeframe, fundamentals, profile });
               }
+            } else {
+              const existing = dataMapRef.current[symbol] || {};
+              saveCachedEntry(symbol, {
+                quote,
+                series,
+                timeframe,
+                fundamentals: existing.fundamentals,
+                profile: existing.profile,
+              });
             }
           } else {
             setEntry(symbol, { loading: false });
@@ -2892,14 +2896,14 @@
         } catch (e) {
           setEntry(symbol, { loading: false, error: e.message || "โหลดข้อมูลไม่สำเร็จ" });
         }
-      }, [tdKey, fhKey, setEntry]);
+      }, [fhKey, setEntry]);
 
       const loadSeries = useCallback(async (symbol, timeframe) => {
         setEntry(symbol, { loading: true, error: null });
         try {
-          const key = tdKey.trim();
-          if (!key) throw new Error("ยังไม่ได้ใส่ Twelve Data API key (ตั้งค่า ⚙)");
-          const series = await fetchSeries(symbol, key, timeframe);
+          const fh = fhKey.trim();
+          if (!fh) throw new Error("ยังไม่ได้ใส่ Finnhub API Key (ตั้งค่า ⚙)");
+          const series = await fetchSeries(symbol, fh, timeframe);
           setEntry(symbol, { series, timeframe, loading: false, error: null, stale: false });
           const existing = dataMapRef.current[symbol] || {};
           saveCachedEntry(symbol, {
@@ -2912,12 +2916,12 @@
         } catch (e) {
           setEntry(symbol, { loading: false, error: e.message || "โหลดข้อมูลไม่สำเร็จ" });
         }
-      }, [tdKey, setEntry]);
+      }, [fhKey, setEntry]);
 
       useEffect(() => {
-        if (!booted || !tdKey.trim()) return;
+        if (!booted || !fhKey.trim()) return;
         symbols.forEach((s) => loadSymbol(s, true, dataMapRef.current[s]?.timeframe || DEFAULT_TIMEFRAME));
-      }, [booted, tdKey, fhKey]);
+      }, [booted, fhKey]);
 
       const handleSymbolTimeframeChange = useCallback((symbol, tf) => {
         if (dataMapRef.current[symbol]?.quote) loadSeries(symbol, tf);
@@ -2935,8 +2939,8 @@
         setSymbols(next);
         saveStore("us-dash-watchlist", next);
         setInput("");
-        if (tdKey.trim()) loadSymbol(s, true, DEFAULT_TIMEFRAME);
-      }, [symbols, tdKey, loadSymbol]);
+        if (fhKey.trim()) loadSymbol(s, true, DEFAULT_TIMEFRAME);
+      }, [symbols, fhKey, loadSymbol]);
 
       const removeSymbol = useCallback((s) => {
         setSymbols((prev) => {
@@ -2949,7 +2953,7 @@
       const refreshAll = useCallback(() => {
         if (refreshCooldown > 0) return;
         symbols.forEach((s) => loadSymbol(s, true, dataMapRef.current[s]?.timeframe || DEFAULT_TIMEFRAME));
-        setRefreshCooldown(20);
+        setRefreshCooldown(10);
         cooldownRef.current = setInterval(() => {
           setRefreshCooldown((c) => {
             if (c <= 1) { clearInterval(cooldownRef.current); return 0; }
@@ -2959,30 +2963,28 @@
       }, [refreshCooldown, symbols, loadSymbol]);
 
       const commitKeys = () => {
-        const td = tdKeyDraft.trim();
         const fh = fhKeyDraft.trim();
-        const rate = Math.max(1, parseInt(tdRateDraft, 10) || 8);
-        if (td !== tdKey) setTdKey(td);
+        const rate = Math.max(1, parseInt(fhRateDraft, 10) || 60);
         if (fh !== fhKey) setFhKey(fh);
-        setTdRatePerMin(rate);
-        setTdRateDraft(String(rate));
-        setTdRateLimit(rate);
-        saveStore("us-dash-keys", { td, fh, tdRate: rate });
+        setFhRatePerMin(rate);
+        setFhRateDraft(String(rate));
+        setFhRateLimit(rate);
+        saveStore("us-dash-keys-fh", { fh, fhRate: rate });
       };
 
       const exportBackup = () => {
         const data = {
           portfolios: JSON.parse(localStorage.getItem("us-dash-portfolios-v3") || "[]"),
           watchlist: JSON.parse(localStorage.getItem("us-dash-watchlist") || "[]"),
-          keys: JSON.parse(localStorage.getItem("us-dash-keys") || "{}"),
-          version: "3.0.0",
+          keys: JSON.parse(localStorage.getItem("us-dash-keys-fh") || "{}"),
+          version: "3.5.0",
           exportDate: new Date().toISOString()
         };
         const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
-        a.download = `us-stock-terminal-backup-${new Date().toISOString().slice(0, 10)}.json`;
+        a.download = `us-stock-terminal-fh-backup-${new Date().toISOString().slice(0, 10)}.json`;
         a.click();
         URL.revokeObjectURL(url);
       };
@@ -3000,15 +3002,13 @@
               setSymbols(parsed.watchlist);
             }
             if (parsed.keys) {
-              saveStore("us-dash-keys", parsed.keys);
-              setTdKey(parsed.keys.td || "");
+              saveStore("us-dash-keys-fh", parsed.keys);
               setFhKey(parsed.keys.fh || "");
-              setTdKeyDraft(parsed.keys.td || "");
               setFhKeyDraft(parsed.keys.fh || "");
-              const rate = parsed.keys.tdRate || 8;
-              setTdRatePerMin(rate);
-              setTdRateDraft(String(rate));
-              setTdRateLimit(rate);
+              const rate = parsed.keys.fhRate || 60;
+              setFhRatePerMin(rate);
+              setFhRateDraft(String(rate));
+              setFhRateLimit(rate);
             }
             alert("นำเข้าข้อมูลสำรองสำเร็จเรียบร้อย!");
             window.location.reload();
@@ -3071,15 +3071,15 @@
             <Radar size={20} className="text-blue-400" />
             <div>
               <div className="font-semibold text-sm flex items-center gap-2">
-                US Stock Terminal <span className="text-[10px] bg-blue-500/20 text-blue-300 border border-blue-500/40 px-1.5 py-0.5 rounded font-mono">v3.0 Pro</span>
+                US Stock Terminal <span className="text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 px-1.5 py-0.5 rounded font-mono">v3.5 Finnhub Speed</span>
               </div>
-              <div className="text-[11px] text-zinc-500 font-sans">Twelve Data (ราคา & กราฟ) | Finnhub (งบการเงิน & โลโก้)</div>
+              <div className="text-[11px] text-zinc-500 font-sans">Finnhub API Engine • Free Tier High Quota (60 Calls/Min)</div>
             </div>
             <div className="ml-auto flex items-center gap-2">
               <span className="text-xs font-mono text-zinc-400 border border-zinc-800 bg-zinc-900 px-2 py-1 rounded">
-                TD Calls Today: <strong className="text-blue-400">{tdCallsToday}</strong>
+                Finnhub Calls Today: <strong className="text-emerald-400">{fhCallsToday}</strong>
                 <span className="text-zinc-600 mx-1.5">|</span>
-                {tdRatePerMin}/นาที
+                {fhRatePerMin}/นาที
               </span>
               <button
                 onClick={exportBackup}
@@ -3103,20 +3103,10 @@
 
           {showSettings && (
             <div className="p-4 bg-zinc-900 border-b border-zinc-800 space-y-3">
-              <div className="text-xs font-semibold text-zinc-200">⚙️ การตั้งค่า API Key</div>
+              <div className="text-xs font-semibold text-zinc-200">⚙️ การตั้งค่า API Key (Finnhub High Quota Engine)</div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
                 <div>
-                  <label className="text-zinc-400 block mb-1">Twelve Data API Key (หลัก สำหรับราคา & กราฟ)</label>
-                  <input
-                    type="password"
-                    value={tdKeyDraft}
-                    onChange={(e) => setTdKeyDraft(e.target.value)}
-                    className="w-full bg-zinc-950 border border-zinc-800 rounded px-3 py-1.5 font-mono text-zinc-100"
-                    placeholder="ใส่ Key Twelve Data"
-                  />
-                </div>
-                <div>
-                  <label className="text-zinc-400 block mb-1">Finnhub API Key (เสริม สำหรับงบการเงิน & โลโก้)</label>
+                  <label className="text-zinc-400 block mb-1">Finnhub API Key (ใช้ key เดียวจบทั้งราคา กราฟ และงบ)</label>
                   <input
                     type="password"
                     value={fhKeyDraft}
@@ -3125,19 +3115,17 @@
                     placeholder="ใส่ Key Finnhub"
                   />
                 </div>
-              </div>
-              <div className="text-xs max-w-sm">
-                <label className="text-zinc-400 block mb-1">
-                  Twelve Data: จำนวนคำขอสูงสุดต่อนาที (ตาม Plan ของคุณ)
-                </label>
-                <input
-                  type="number"
-                  min="1"
-                  value={tdRateDraft}
-                  onChange={(e) => setTdRateDraft(e.target.value)}
-                  className="w-28 bg-zinc-950 border border-zinc-800 rounded px-3 py-1.5 font-mono text-zinc-100"
-                  placeholder="8"
-                />
+                <div>
+                  <label className="text-zinc-400 block mb-1">จำนวนคำขอสูงสุดต่อนาที (Finnhub Free = 60/นาที)</label>
+                  <input
+                    type="number"
+                    min="1"
+                    value={fhRateDraft}
+                    onChange={(e) => setFhRateDraft(e.target.value)}
+                    className="w-full bg-zinc-950 border border-zinc-800 rounded px-3 py-1.5 font-mono text-zinc-100"
+                    placeholder="60"
+                  />
+                </div>
               </div>
               <button
                 onClick={() => { commitKeys(); setShowSettings(false); }}
@@ -3179,13 +3167,12 @@
 
           <div className="max-w-7xl mx-auto p-4 space-y-4">
             {tab === "portfolio" && (
-              <PortfolioView tdKey={tdKey} dataMap={dataMap} loadSymbol={loadSymbol} />
+              <PortfolioView fhKey={fhKey} dataMap={dataMap} loadSymbol={loadSymbol} />
             )}
 
             {tab === "watchlist" && (
               <div className="space-y-4">
                 <WeeklyRecommendedPanel
-                  tdKey={tdKey}
                   fhKey={fhKey}
                   dataMap={dataMap}
                   loadSymbol={loadSymbol}
@@ -3265,16 +3252,6 @@
 
             {tab === "screener" && (
               <div className="space-y-4">
-                {!fhKey.trim() && (
-                  <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 text-xs text-amber-300 flex items-start gap-2">
-                    <span>⚠️</span>
-                    <span>
-                      ยังไม่ได้ใส่ <strong>Finnhub API Key</strong> — ข้อมูลรายได้เติบโต (Revenue Growth), Gross Margin,
-                      Market Cap และคะแนน S-Curve บางส่วนจะแสดงเป็น "—" จนกว่าจะตั้งค่า Finnhub Key ในเมนู ⚙ ที่มุมขวาบน
-                    </span>
-                  </div>
-                )}
-
                 <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-4 flex flex-wrap items-center justify-between gap-3">
                   <div>
                     <div className="font-semibold text-base flex items-center gap-2">
@@ -3282,7 +3259,7 @@
                       Automated 10x-100x S-Curve Screener
                     </div>
                     <div className="text-xs text-zinc-400 mt-1">
-                      อัลกอริทึมสแกนปัจจัยพื้นฐาน (Finnhub) + เทคนิคัล (Twelve Data) คะแนนเต็ม 20 คะแนน
+                      อัลกอริทึมสแกนปัจจัยพื้นฐาน + เทคนิคัล (Finnhub High Speed Engine) คะแนนเต็ม 20 คะแนน
                     </div>
                   </div>
 
@@ -3330,7 +3307,7 @@
             )}
 
             {tab === "sector" && (
-              <SectorRotationView tdKey={tdKey} />
+              <SectorRotationView fhKey={fhKey} />
             )}
           </div>
         </div>
