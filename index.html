@@ -417,7 +417,9 @@
     }
 
     /* ---------------- AI portfolio image import (Google Gemini Vision) ---------------- */
-    const GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
+    // ใช้ Interactions API ตัวใหม่ของ Gemini (generateContent รุ่นเก่าถูกปิดสำหรับผู้ใช้ใหม่แล้ว)
+    const GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/interactions";
+    const GEMINI_MODEL = "gemini-3.6-flash";
     const PORTFOLIO_EXTRACT_PROMPT = [
       "คุณกำลังดูภาพหน้าจอ (screenshot) ของพอร์ตหุ้น/แอปเทรดหุ้น ให้อ่านตารางรายการหุ้นในภาพแล้วดึงข้อมูลออกมาเป็น JSON array เท่านั้น",
       "ห้ามใส่คำอธิบาย ห้ามใส่ markdown code fence ห้ามมีข้อความอื่นใดนอกเหนือจาก JSON array",
@@ -439,24 +441,39 @@
       '[{"symbol":"AAPL","shares":10,"avgCost":150.25},{"symbol":"NVDA","shares":5,"avgCost":420.1}]'
     ].join("\n");
 
+    // ดึงข้อความคำตอบล่าสุดจาก response ของ Interactions API
+    // รองรับทั้งสคีมาเก่า (outputs[]) และสคีมาใหม่ (steps[] แบบ structured timeline)
+    function extractInteractionText(data) {
+      if (Array.isArray(data.outputs)) {
+        const block = data.outputs.find((o) => o.type === "text" && o.text);
+        if (block) return block.text;
+      }
+      if (Array.isArray(data.steps)) {
+        for (let i = data.steps.length - 1; i >= 0; i--) {
+          const step = data.steps[i];
+          if (step.type === "model_output" && Array.isArray(step.content)) {
+            const block = step.content.find((c) => c.type === "text" && c.text);
+            if (block) return block.text;
+          }
+        }
+      }
+      return null;
+    }
+
     async function extractPortfolioFromImage(base64Data, mediaType, apiKey) {
-      const res = await fetch(`${GEMINI_API_BASE}?key=${encodeURIComponent(apiKey)}`, {
+      const res = await fetch(GEMINI_API_BASE, {
         method: "POST",
         headers: {
-          "content-type": "application/json"
+          "content-type": "application/json",
+          "x-goog-api-key": apiKey
         },
         body: JSON.stringify({
-          contents: [
-            {
-              role: "user",
-              parts: [
-                { inline_data: { mime_type: mediaType, data: base64Data } },
-                { text: PORTFOLIO_EXTRACT_PROMPT }
-              ]
-            }
+          model: GEMINI_MODEL,
+          input: [
+            { type: "text", text: PORTFOLIO_EXTRACT_PROMPT },
+            { type: "image", data: base64Data, mime_type: mediaType }
           ],
-          generationConfig: {
-            maxOutputTokens: 2048,
+          generation_config: {
             temperature: 0
           }
         })
@@ -472,13 +489,12 @@
       }
 
       const data = await res.json();
-      const parts = data?.candidates?.[0]?.content?.parts || [];
-      const textBlock = parts.find((p) => typeof p.text === "string" && p.text.trim());
-      if (!textBlock || !textBlock.text) {
+      const text = extractInteractionText(data);
+      if (!text) {
         throw new Error("ไม่ได้รับข้อความตอบกลับจาก Gemini");
       }
 
-      let raw = textBlock.text.trim();
+      let raw = text.trim();
       raw = raw.replace(/^```(?:json)?/i, "").replace(/```$/i, "").trim();
 
       let parsed;
