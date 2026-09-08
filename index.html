@@ -665,6 +665,92 @@
       });
     }
 
+    /* ============================================================
+       GLOBAL STOCK UNIVERSE (สำหรับขยาย Pool ตัวสแกนเป็น ~2,000 ตัวทั่วโลก)
+       ------------------------------------------------------------
+       เดิม TRENDING_UNIVERSE เป็นลิสต์หุ้นที่พิมพ์มือ (~160 ตัว) ทำให้ปรับ Pool
+       ให้ใหญ่ขึ้นจริง ๆ ไม่ได้โดยไม่เสี่ยงพิมพ์ชื่อ/Sector/ประเทศผิด เราจึงดึงรายชื่อ
+       หุ้นจริงจาก Twelve Data endpoint "/stocks" (Reference Data) แทน ซึ่งมีข้อดีคือ:
+       - ยิง 1 ครั้ง = ได้ credit cost แค่ 1 เครดิต/คำขอ (ไม่ใช่ 1 เครดิต/หุ้น) จึงถูกมาก
+       - ได้รายชื่อ Symbol + ประเทศ ที่ถูกต้องจริงจากตลาดจริง ครอบคลุมหลายประเทศ/ทุกขนาด
+       - แคชผลไว้ 24 ชม. (ข้อมูลรายชื่ออัปเดตแค่วันละครั้งอยู่แล้ว) จึงไม่ต้องยิงซ้ำบ่อย ๆ
+       Sector ของหุ้นกลุ่มนี้จะยังไม่ทราบตอนดึงมา (ไม่เสียโควตาดึง sector ล่วงหน้าเป็นพัน ๆ ตัว)
+       — จะไปดึงเฉพาะหุ้นที่ผ่านเกณฑ์ Strong Bullish ใน scanCandidates() แทน (ดูฟังก์ชันนั้น)
+       ============================================================ */
+    const UNIVERSE_CACHE_KEY = "us-dash-global-universe-v1";
+    const UNIVERSE_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 ชั่วโมง
+
+    // ประเทศ/ภูมิภาคหลักที่ใช้ดึงรายชื่อหุ้น — ครอบคลุมอเมริกาเหนือ ยุโรป เอเชีย โอเชียเนีย ลาตินอเมริกา
+    const UNIVERSE_COUNTRIES = [
+      "United States", "Canada", "United Kingdom", "Germany", "France",
+      "Japan", "China", "India", "South Korea", "Taiwan",
+      "Singapore", "Australia", "Brazil", "Netherlands", "Switzerland",
+    ];
+    const COUNTRY_NAME_TO_CODE = {
+      "United States": "US", "Canada": "CA", "United Kingdom": "GB", "Germany": "DE",
+      "France": "FR", "Japan": "JP", "China": "CN", "India": "IN", "South Korea": "KR",
+      "Taiwan": "TW", "Singapore": "SG", "Australia": "AU", "Brazil": "BR",
+      "Netherlands": "NL", "Switzerland": "CH",
+    };
+
+    async function fetchStocksByCountry(country, tdKey) {
+      return tdQueue(async () => {
+        bumpTdCalls(); // นับเป็น 1 เครดิตต่อคำขอ (ไม่ใช่ต่อสัญลักษณ์) — ได้หุ้นนับพันตัวในราคาถูกมาก
+        const res = await fetch(
+          `${TD_BASE}/stocks?type=${encodeURIComponent("Common Stock")}&country=${encodeURIComponent(country)}&apikey=${tdKey}`
+        );
+        const data = await res.json();
+        return Array.isArray(data.data) ? data.data : [];
+      });
+    }
+
+    // ดึง+รวมรายชื่อหุ้นจริงจากหลายประเทศ พร้อมแคช 24 ชม. เพื่อไม่ต้องยิงซ้ำทุกครั้งที่เปิดแอป
+    async function fetchGlobalUniverse(tdKey) {
+      try {
+        const raw = localStorage.getItem(UNIVERSE_CACHE_KEY);
+        if (raw) {
+          const cached = JSON.parse(raw);
+          const age = Date.now() - (cached.cachedAt || 0);
+          if (age >= 0 && age < UNIVERSE_CACHE_TTL_MS && Array.isArray(cached.items) && cached.items.length > 0) {
+            return cached.items;
+          }
+        }
+      } catch {
+        /* แคชเสีย ข้ามไปดึงใหม่ */
+      }
+
+      if (!tdKey) return [];
+
+      const collected = [];
+      const seen = new Set();
+      for (const country of UNIVERSE_COUNTRIES) {
+        try {
+          const rows = await fetchStocksByCountry(country, tdKey);
+          rows.forEach((item) => {
+            const sym = item.symbol;
+            // ตัดสัญลักษณ์ที่มีจุด/เว้นวรรค/สแลช (มักเป็นหุ้นบุริมสิทธิ, คลาสพิเศษ, ใบสำคัญแสดงสิทธิ) เพื่อความเรียบง่าย
+            if (!sym || /[.\s/]/.test(sym) || seen.has(sym)) return;
+            seen.add(sym);
+            collected.push({
+              symbol: sym,
+              country: COUNTRY_NAME_TO_CODE[item.country] || item.country || COUNTRY_NAME_TO_CODE[country] || country,
+              sector: null,
+              catalyst: null,
+            });
+          });
+        } catch (e) {
+          console.warn(`โหลดรายชื่อหุ้นจากประเทศ ${country} ไม่สำเร็จ:`, e);
+        }
+      }
+
+      try {
+        localStorage.setItem(UNIVERSE_CACHE_KEY, JSON.stringify({ items: collected, cachedAt: Date.now() }));
+      } catch (e) {
+        console.error("บันทึกแคชรายชื่อหุ้นทั่วโลกไม่สำเร็จ", e);
+      }
+      return collected;
+    }
+
     function pick(obj, keys) {
       if (!obj) return null;
       for (const k of keys) if (obj[k] != null && !Number.isNaN(obj[k])) return obj[k];
@@ -948,12 +1034,17 @@
     ];
 
     // กำหนดการสแกน:
-    // 1. ครบ 10 ตัวก็พอ
+    // 1. แนะนำสุดท้าย 10 ตัว
     // 2. Strong Bullish เท่านั้น (Uptrend + Strong Bullish Momentum)
-    // 3. ตั้ง Max Stocks Pool ไว้ที่ 1,000 หุ้น
-    // 4. สแกนจนเจอครบ 10 ตัวแล้วให้หยุดสแกนทันที (Fast Stop)
+    // 3. Pool หุ้นทั่วโลกสูงสุด 2,000 ตัว (ผสม Pool คัดสรร TRENDING_UNIVERSE + Pool หุ้นจริงจาก
+    //    Twelve Data ครอบคลุมหลายประเทศ/sector/ขนาดกิจการ ดู fetchGlobalUniverse ด้านบน)
+    // 4. สแกนจนพบหุ้นที่เข้าเกณฑ์ครบ SCAN_BUFFER ตัวแล้วให้ "หยุดสแกนทันที" (Fast Stop) — เผื่อ
+    //    ตัวเลือกไว้มากกว่า 10 เล็กน้อยเพื่อให้คัดกรอง 10 ตัวสุดท้ายแบบคละ Small/Mid/Large Cap ได้จริง
+    //    (เดิมมีบั๊ก: เช็คผลลัพธ์จาก state/ref ที่อัปเดตช้ากว่ารอบสแกน ทำให้นับจำนวนที่เจอผิดพลาด
+    //    และสแกนไม่ยอมหยุดแม้เจอครบแล้ว — แก้โดยใช้ค่าที่ loadSymbol() คืนกลับมาโดยตรงแทน)
     const WEEKLY_PICK_COUNT = 10;
-    const MAX_SCAN_POOL = 1000;
+    const SCAN_BUFFER = 30;
+    const MAX_SCAN_POOL = 2000;
 
     function isWeeklyPickEligible(cls) {
       if (!cls) return false;
@@ -974,23 +1065,43 @@
       Small: "text-pink-300 bg-pink-500/10 border-pink-500/30",
     };
 
-    function getWeeklyRotationOrder(weekKeyStr) {
+    function getWeeklyRotationOrder(weekKeyStr, poolArr) {
       const dateObj = weekKeyStr ? new Date(weekKeyStr) : new Date();
       const weekKey = Math.floor(dateObj.getTime() / (1000 * 60 * 60 * 24 * 7));
-      const pool = TRENDING_UNIVERSE.slice(0, MAX_SCAN_POOL);
+      const pool = (poolArr && poolArr.length ? poolArr : TRENDING_UNIVERSE).slice(0, MAX_SCAN_POOL);
       const poolLen = pool.length;
       if (poolLen === 0) return [];
       const start = weekKey % poolLen;
       return Array.from({ length: poolLen }, (_, i) => pool[(start + i) % poolLen]);
     }
 
-    function WeeklyRecommendedPanel({ tdKey, fhKey, dataMap, loadSymbol, symbols, onAdd }) {
+    function WeeklyRecommendedPanel({ tdKey, fhKey, dataMap, loadSymbol, loadFundamentalsOnly, symbols, onAdd }) {
       const [loading, setLoading] = useState(false);
       const [scanProgress, setScanProgress] = useState({ done: 0, total: 0, found: 0 });
-      const dataMapRef = useRef(dataMap);
+      // Pool เริ่มต้นด้วยลิสต์คัดสรร (TRENDING_UNIVERSE) ใช้งานได้ทันที ระหว่างรอโหลด Pool หุ้นทั่วโลก
+      // จริงจาก Twelve Data (ดึงครั้งเดียว แคช 24 ชม. — ดู fetchGlobalUniverse) มาผสมเพิ่มเป็น ~2,000 ตัว
+      const [universe, setUniverse] = useState(TRENDING_UNIVERSE);
+      const [universeReady, setUniverseReady] = useState(false);
+
       useEffect(() => {
-        dataMapRef.current = dataMap;
-      }, [dataMap]);
+        let cancelled = false;
+        if (!tdKey) return undefined;
+        (async () => {
+          const dynamic = await fetchGlobalUniverse(tdKey);
+          if (cancelled || dynamic.length === 0) return;
+          const seen = new Set(TRENDING_UNIVERSE.map((s) => s.symbol));
+          const merged = [...TRENDING_UNIVERSE];
+          for (const item of dynamic) {
+            if (merged.length >= MAX_SCAN_POOL) break;
+            if (seen.has(item.symbol)) continue;
+            seen.add(item.symbol);
+            merged.push(item);
+          }
+          setUniverse(merged);
+          setUniverseReady(true);
+        })();
+        return () => { cancelled = true; };
+      }, [tdKey]);
 
       const today = useMemo(() => {
         const d = new Date();
@@ -1006,9 +1117,9 @@
           date: formattedDate,
           weekKey,
           displayDate: `${monday.toLocaleDateString("th-TH", { day: "numeric", month: "short" })} - ${sunday.toLocaleDateString("th-TH", { day: "numeric", month: "short", year: "numeric" })}`,
-          rotation: getWeeklyRotationOrder(weekKey),
+          rotation: getWeeklyRotationOrder(weekKey, universe),
         };
-      }, []);
+      }, [universe]);
 
       const scanCandidates = useCallback(async () => {
         if (!tdKey) return;
@@ -1019,58 +1130,75 @@
         try {
           let doneCount = 0;
           let foundCount = 0;
+          const foundSymbols = [];
 
-          // ตรวจสอบหุ้นที่มีข้อมูลอยู่ในเครื่องแล้วก่อน
+          // รอบที่ 1: เช็คเฉพาะหุ้นที่มีข้อมูล (series) แคชสดอยู่ในเครื่องแล้ว — ไม่ต้องยิง API เลย
           for (const item of rotationPool) {
-            const cached = dataMapRef.current[item.symbol];
+            const cached = dataMap[item.symbol];
             if (cached && cached.series && cached.series.length >= 20) {
               const cls = classify(cached.series);
-              if (isWeeklyPickEligible(cls)) {
-                foundCount++;
-              }
+              if (isWeeklyPickEligible(cls)) foundSymbols.push(item.symbol);
             }
           }
+          foundCount = foundSymbols.length;
 
-          // หากพบครบ 10 ตัวแล้ว ไม่ต้องสแกนเพิ่ม
-          if (foundCount >= WEEKLY_PICK_COUNT) {
+          // หากพบครบตามเป้า (SCAN_BUFFER) จากแคชอยู่แล้ว ไม่ต้องสแกนเพิ่มเลย
+          if (foundCount < SCAN_BUFFER) {
+            // รอบที่ 2: ไล่สแกนทีละตัวเฉพาะที่ยังไม่มีข้อมูล/ข้อมูลเก่า โดย "ข้ามการดึงข้อมูล
+            // พื้นฐาน (Finnhub) ระหว่างสแกน" เพื่อประหยัดโควตา Finnhub อย่างมาก (เดิมยิง Finnhub
+            // ทุกตัวที่สแกนแม้จะไม่ผ่านเกณฑ์ก็ตาม) — จะไปดึงเฉพาะตัวที่ผ่านเกณฑ์ในรอบถัดไปแทน
+            const foundSet = new Set(foundSymbols);
+            for (const item of rotationPool) {
+              if (foundCount >= SCAN_BUFFER) {
+                console.log(`[Scanner] พบหุ้นเข้าเกณฑ์ครบ ${SCAN_BUFFER} ตัวแล้ว หยุดการสแกนทันที (ประหยัดโควตา API)`);
+                break;
+              }
+              if (foundSet.has(item.symbol)) { doneCount++; continue; }
+
+              const cachedFresh = dataMap[item.symbol];
+              const alreadyFresh = cachedFresh && !cachedFresh.stale && cachedFresh.series && cachedFresh.series.length >= 20;
+
+              // จุดที่แก้บั๊กสำคัญ: เดิมโค้ดอ่านผลลัพธ์จาก dataMap/ref ของ React ทันทีหลัง await ซึ่ง
+              // อาจยังอัปเดตไม่ทันภายในรอบ loop เดียวกัน (state update เป็น async) ทำให้นับจำนวนที่
+              // เจอผิดพลาดและสแกนไม่ยอมหยุดแม้เจอครบแล้ว — ตอนนี้ใช้ค่าที่ loadSymbol() "คืนกลับมา
+              // โดยตรง" แทน จึงได้ข้อมูลล่าสุดที่ถูกต้องเสมอ
+              const entry = alreadyFresh
+                ? cachedFresh
+                : await loadSymbol(item.symbol, true, DEFAULT_TIMEFRAME, { skipFundamentals: true });
+
+              if (entry && entry.series && entry.series.length >= 20) {
+                const cls = classify(entry.series);
+                if (isWeeklyPickEligible(cls)) {
+                  foundSet.add(item.symbol);
+                  foundSymbols.push(item.symbol);
+                  foundCount++;
+                }
+              }
+
+              doneCount++;
+              setScanProgress({ done: doneCount, total: rotationPool.length, found: foundCount });
+            }
+          } else {
             setScanProgress({ done: rotationPool.length, total: rotationPool.length, found: foundCount });
-            return;
           }
 
-          // ไล่สแกนทีละตัว หากพบครบ 10 ตัวที่เข้าเกณฑ์ Strong Bullish + Uptrend ให้หยุดสแกนทันที
-          for (const item of rotationPool) {
-            if (foundCount >= WEEKLY_PICK_COUNT) {
-              console.log(`[Scanner] พบหุ้น Strong Bullish ครบ ${WEEKLY_PICK_COUNT} ตัวแล้ว หยุดการสแกนทันที`);
-              break;
+          // รอบที่ 3: ดึงข้อมูลพื้นฐาน (Finnhub) เฉพาะหุ้นที่ "ผ่านเกณฑ์แล้วเท่านั้น" เพื่อทราบ
+          // Market Cap สำหรับจัดกลุ่ม Small/Mid/Large Cap — ลดจำนวนเรียก Finnhub จากหลักพันเหลือ
+          // แค่หลักสิบ (เท่าจำนวนหุ้นที่ผ่านเกณฑ์จริง) ต่อรอบสแกน
+          if (fhKey && loadFundamentalsOnly && foundSymbols.length > 0) {
+            for (const sym of foundSymbols) {
+              await loadFundamentalsOnly(sym);
             }
-
-            const cached = dataMapRef.current[item.symbol];
-            const needsFundamentals = !!fhKey && !cached?.fundamentals;
-            const alreadyFresh = cached && !cached.stale && cached.series && cached.series.length >= 20 && !needsFundamentals;
-
-            if (!alreadyFresh) {
-              await loadSymbol(item.symbol, true);
-            }
-
-            const entry = dataMapRef.current[item.symbol];
-            if (entry && entry.series && entry.series.length >= 20) {
-              const cls = classify(entry.series);
-              if (isWeeklyPickEligible(cls)) {
-                foundCount++;
-              }
-            }
-
-            doneCount++;
-            setScanProgress({ done: doneCount, total: rotationPool.length, found: foundCount });
           }
         } finally {
           setLoading(false);
         }
-      }, [tdKey, fhKey, today, loadSymbol]);
+      }, [tdKey, fhKey, today, loadSymbol, loadFundamentalsOnly, dataMap]);
 
       useEffect(() => {
         scanCandidates();
-      }, [today.weekKey, tdKey, fhKey]);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, [today.weekKey, tdKey, fhKey, universeReady]);
 
       const recommended = useMemo(() => {
         const candidates = [];
@@ -1097,16 +1225,21 @@
         const strength = (c) => c.cls.trendScore + (c.cls.rsi || 0) / 100;
         candidates.sort((a, b) => strength(b) - strength(a));
 
-        // กระจายหุ้นให้อยู่หลายภูมิภาค
-        const regionsOrder = [...new Set(candidates.map((c) => c.region))];
+        // คัดหุ้นแนะนำสุดท้ายแบบ "คละ Cap Tier" (Large / Mid / Small / ไม่ทราบ) ก่อน เพื่อไม่ให้
+        // ได้แต่หุ้น Large Cap ล้วน ๆ ตามที่ผู้ใช้ต้องการ — วนหยิบตัวที่แข็งแรงที่สุดจากแต่ละกลุ่ม
+        // ทีละรอบ (round-robin) จนครบ WEEKLY_PICK_COUNT ตัว
+        const tierOrder = ["Large", "Mid", "Small", null];
+        const byTier = {};
+        tierOrder.forEach((t) => { byTier[t] = candidates.filter((c) => c.capTier === t); });
+
         const picked = [];
         const usedSymbols = new Set();
         let guard = 0;
         while (picked.length < WEEKLY_PICK_COUNT && guard < candidates.length + 1) {
           let addedThisRound = false;
-          for (const region of regionsOrder) {
+          for (const t of tierOrder) {
             if (picked.length >= WEEKLY_PICK_COUNT) break;
-            const next = candidates.find((c) => !usedSymbols.has(c.symbol) && c.region === region);
+            const next = byTier[t].find((c) => !usedSymbols.has(c.symbol));
             if (next) {
               picked.push(next);
               usedSymbols.add(next.symbol);
@@ -1135,10 +1268,10 @@
                 <span>หุ้นแนะนำประจำสัปดาห์ 🌐 ทั่วโลก (Strong Bullish Only - {WEEKLY_PICK_COUNT} ตัว)</span>
               </div>
               <div className="text-xs text-zinc-400 mt-0.5">
-                เกณฑ์: คัดกรองจากพูลหุ้นสูงสุด <strong className="text-zinc-200">1,000 ตัวทั่วโลก</strong> ครอบคลุม{" "}
-                <strong className="text-zinc-200">Small / Mid / Large Cap</strong> ทุกภูมิภาค โดยยึดเฉพาะหุ้นที่เป็น{" "}
+                เกณฑ์: คัดกรองจากพูลหุ้นสูงสุด <strong className="text-zinc-200">2,000 ตัวทั่วโลก</strong> (ผสมหุ้นคัดสรร + รายชื่อจริงจากหลายตลาดทั่วโลก) ครอบคลุม{" "}
+                <strong className="text-zinc-200">Small / Mid / Large Cap คละกัน</strong> ทุกภูมิภาค โดยยึดเฉพาะหุ้นที่เป็น{" "}
                 <strong className="text-emerald-400">ขาขึ้น (Uptrend)</strong> และ{" "}
-                <strong className="text-emerald-400">โมเมนตัมบวกแรง (Strong Bullish) เท่านั้น</strong> • เมื่อสแกนเจอครบ {WEEKLY_PICK_COUNT} ตัวจะหยุดสแกนทันที • เปลี่ยนชุดสแกนใหม่อัตโนมัติทุกสัปดาห์
+                <strong className="text-emerald-400">โมเมนตัมบวกแรง (Strong Bullish) เท่านั้น</strong> • เมื่อสแกนเจอผู้เข้าเกณฑ์ครบ {SCAN_BUFFER} ตัว (มากกว่า {WEEKLY_PICK_COUNT} ตัวสุดท้ายเล็กน้อย เผื่อคละ Cap Tier) จะหยุดสแกนทันที • เปลี่ยนชุดสแกนใหม่อัตโนมัติทุกสัปดาห์
               </div>
             </div>
             <div className="flex items-center gap-2">
@@ -1167,7 +1300,7 @@
 
           {loading && (
             <div className="bg-zinc-950/80 border border-zinc-800 rounded-lg p-3 text-center text-xs text-amber-300 font-mono">
-              ⚡ กำลังสแกนจากพูลหุ้นทั่วโลก... พบแล้ว {scanProgress.found}/{WEEKLY_PICK_COUNT} ตัว (เช็กไปแล้ว {scanProgress.done} ตัว)
+              ⚡ กำลังสแกนจากพูลหุ้นทั่วโลก... พบผู้เข้าเกณฑ์แล้ว {scanProgress.found}/{SCAN_BUFFER} ตัว (เช็กไปแล้ว {scanProgress.done}/{scanProgress.total} ตัว)
             </div>
           )}
 
@@ -2893,10 +3026,16 @@
         setDataMap((prev) => ({ ...prev, [symbol]: { ...(prev[symbol] || {}), ...patch } }));
       }, []);
 
+      // loadSymbol ตอนนี้ "คืนค่า (return)" entry ล่าสุดกลับไปเสมอ ไม่ว่าจะมาจากแคชหรือดึงใหม่
+      // เหตุผล: ผู้เรียก (เช่นตัวสแกนหุ้นแนะนำประจำสัปดาห์) เดิมต้องอ่านผลลัพธ์ผ่าน dataMap/ref
+      // ของ React ทันทีหลัง await ซึ่ง state update เป็น async อาจยังไม่อัปเดตทันในรอบเดียวกัน
+      // ทำให้เช็คเงื่อนไข (เช่น "เจอครบ 10 ตัวหรือยัง") ผิดพลาดได้ การคืนค่าตรง ๆ ช่วยตัดปัญหานี้ทิ้ง
+      // นอกจากนี้ยังรองรับ opts.skipFundamentals เพื่อข้ามการยิง Finnhub ระหว่างสแกนหาผู้เข้าเกณฑ์
+      // (ประหยัดโควตา Finnhub มาก เพราะไม่ต้องยิงให้ทุกตัวที่สแกน แค่ตัวที่ผ่านเกณฑ์จริงเท่านั้น)
       const loadSymbol = useCallback(async (symbol, full = true, timeframe = DEFAULT_TIMEFRAME, opts = {}) => {
-        const { forceRefresh = false } = opts;
+        const { forceRefresh = false, skipFundamentals = false } = opts;
         const fh = fhKey.trim();
-        const needsFundamentals = full && !!fh;
+        const needsFundamentals = full && !!fh && !skipFundamentals;
 
         // เช็คแคชก่อนยิง API ทุกครั้ง — ถ้าข้อมูล timeframe เดียวกันยังไม่หมดอายุ (ดู CACHE_TTL_MS)
         // และไม่ได้ถูกสั่ง forceRefresh (เช่นกดปุ่ม "อัปเดตทั้งหมด" หรือรีเฟรชรายตัว) ให้ใช้ของเดิม
@@ -2904,8 +3043,9 @@
         if (!forceRefresh) {
           const cached = loadCachedEntry(symbol);
           if (isCacheEntryFresh(cached, timeframe, needsFundamentals)) {
-            setEntry(symbol, { ...cached, loading: false, error: null, stale: false });
-            return;
+            const result = { ...cached, loading: false, error: null, stale: false };
+            setEntry(symbol, result);
+            return result;
           }
         }
 
@@ -2926,26 +3066,56 @@
             // ยิง /quote แยก — ลด credit ต่อสัญลักษณ์ลงครึ่งหนึ่งเมื่อเทียบกับโค้ดเดิม
             const series = await fetchSeries(symbol, key, timeframe);
             const quote = deriveQuoteFromSeries(series);
-            setEntry(symbol, { quote, series, timeframe, loading: !!fhPromise, error: null, stale: false });
-            saveCachedEntry(symbol, { quote, series, timeframe });
+            let result = { quote, series, timeframe, loading: !!fhPromise, error: null, stale: false };
+            setEntry(symbol, result);
+            saveCachedEntry(symbol, result);
 
             if (fhPromise) {
               const fhResult = await fhPromise;
               if (fhResult) {
                 const [fundamentals, profile] = fhResult;
+                result = { ...result, fundamentals, profile, loading: false };
                 setEntry(symbol, { fundamentals, profile, loading: false });
-                saveCachedEntry(symbol, { quote, series, timeframe, fundamentals, profile });
+                saveCachedEntry(symbol, result);
               } else {
+                result = { ...result, loading: false };
                 setEntry(symbol, { loading: false });
               }
             }
+            return result;
           } else {
             setEntry(symbol, { loading: false });
+            return { loading: false };
           }
         } catch (e) {
-          setEntry(symbol, { loading: false, error: e.message || "โหลดข้อมูลไม่สำเร็จ" });
+          const errPatch = { loading: false, error: e.message || "โหลดข้อมูลไม่สำเร็จ" };
+          setEntry(symbol, errPatch);
+          return errPatch;
         }
       }, [tdKey, fhKey, setEntry]);
+
+      // ดึงเฉพาะข้อมูลพื้นฐาน (Finnhub: metric + profile) แบบเบา ๆ โดยไม่แตะ Twelve Data/series เลย
+      // ใช้สำหรับดึง Market Cap เฉพาะหุ้นที่ผ่านเกณฑ์ Strong Bullish แล้วเท่านั้น (ดู
+      // WeeklyRecommendedPanel.scanCandidates) แทนที่จะยิง Finnhub ให้ทุกตัวที่สแกนหาเหมือนเดิม
+      const loadFundamentalsOnly = useCallback(async (symbol) => {
+        const fh = fhKey.trim();
+        if (!fh) return null;
+        const existing = dataMapRef.current[symbol];
+        if (existing?.fundamentals && existing?.profile) return existing; // มีอยู่แล้ว ไม่ต้องยิงซ้ำ
+        try {
+          const [fundamentals, profile] = await Promise.all([
+            fetchFundamentals(symbol, fh),
+            fetchProfile(symbol, fh),
+          ]);
+          const merged = { ...(dataMapRef.current[symbol] || {}), fundamentals, profile };
+          setEntry(symbol, { fundamentals, profile });
+          saveCachedEntry(symbol, merged);
+          return merged;
+        } catch (e) {
+          console.warn(`Finnhub error for ${symbol}:`, e);
+          return null;
+        }
+      }, [fhKey, setEntry]);
 
       const loadSeries = useCallback(async (symbol, timeframe, opts = {}) => {
         const { forceRefresh = false } = opts;
@@ -3252,6 +3422,7 @@
                   fhKey={fhKey}
                   dataMap={dataMap}
                   loadSymbol={loadSymbol}
+                  loadFundamentalsOnly={loadFundamentalsOnly}
                   symbols={symbols}
                   onAdd={addSymbol}
                 />
