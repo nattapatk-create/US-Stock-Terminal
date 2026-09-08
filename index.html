@@ -429,6 +429,20 @@
       }
     }
 
+    // ระยะเวลาที่ถือว่าแคชยัง "สด" อยู่ — ข้อมูลเป็นกราฟรายสัปดาห์/รายวันเป็นหลัก จึงไม่จำเป็นต้อง
+    // ยิง API ใหม่ทุกครั้งที่เปิดแอปหรือสแกนซ้ำภายในวันเดียวกัน ค่านี้ช่วยลดจำนวนการเรียก Twelve
+    // Data / Finnhub ลงอย่างมากเมื่อผู้ใช้เปิด/ปิดแอปหรือกดสแกนซ้ำ ๆ ในช่วงเวลาสั้น ๆ
+    const CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 ชั่วโมง
+
+    function isCacheEntryFresh(entry, timeframe, needsFundamentals) {
+      if (!entry) return false;
+      if (entry.timeframe !== timeframe) return false;
+      if (!entry.series || entry.series.length < 20) return false;
+      if (needsFundamentals && !entry.fundamentals) return false;
+      const age = Date.now() - (entry.cachedAt || 0);
+      return age >= 0 && age < CACHE_TTL_MS;
+    }
+
     function tdCounterKey() {
       return `td-calls-${new Date().toISOString().slice(0, 10)}`;
     }
@@ -593,6 +607,29 @@
       });
     }
 
+    // เดิม fetchQuote() ยิง Twelve Data /quote แยกต่างหาก (เปลือง credit ซ้ำซ้อนกับ /time_series
+    // ที่ยิงอยู่แล้ว) — ตอนนี้คำนวณ "quote" จากแท่งราคาล่าสุดใน series แทน ทำให้แต่ละสัญลักษณ์
+    // ใช้ Twelve Data credit เหลือแค่ 1 ครั้ง/รอบ (จากเดิม 2 ครั้ง) เร็วขึ้น ~2 เท่า และประหยัด
+    // โควตาลงครึ่งหนึ่งโดยไม่เสียข้อมูลที่หน้าจอใช้จริง (close, percent_change, volume)
+    function deriveQuoteFromSeries(series) {
+      if (!series || series.length === 0) return null;
+      const last = series[series.length - 1];
+      const prev = series.length > 1 ? series[series.length - 2] : null;
+      const prevClose = prev ? prev.close : last.open;
+      const percentChange = prevClose ? ((last.close - prevClose) / prevClose) * 100 : 0;
+      return {
+        close: last.close,
+        percent_change: percentChange,
+        open: last.open,
+        high: last.high,
+        low: last.low,
+        previous_close: prevClose,
+        volume: last.volume ?? null,
+      };
+    }
+
+    // เก็บ fetchQuote ไว้เผื่ออนาคตต้องการราคาสด real-time แยกจากกราฟ แต่ตอน initial/refresh
+    // load ปกติจะไม่เรียกใช้แล้ว (ดู loadSymbol/loadSeries ด้านล่าง)
     async function fetchQuote(symbol, tdKey) {
       return tdQueue(async () => {
         bumpTdCalls();
@@ -2856,34 +2893,50 @@
         setDataMap((prev) => ({ ...prev, [symbol]: { ...(prev[symbol] || {}), ...patch } }));
       }, []);
 
-      const loadSymbol = useCallback(async (symbol, full = true, timeframe = DEFAULT_TIMEFRAME) => {
+      const loadSymbol = useCallback(async (symbol, full = true, timeframe = DEFAULT_TIMEFRAME, opts = {}) => {
+        const { forceRefresh = false } = opts;
+        const fh = fhKey.trim();
+        const needsFundamentals = full && !!fh;
+
+        // เช็คแคชก่อนยิง API ทุกครั้ง — ถ้าข้อมูล timeframe เดียวกันยังไม่หมดอายุ (ดู CACHE_TTL_MS)
+        // และไม่ได้ถูกสั่ง forceRefresh (เช่นกดปุ่ม "อัปเดตทั้งหมด" หรือรีเฟรชรายตัว) ให้ใช้ของเดิม
+        // ทันทีโดยไม่เรียก Twelve Data / Finnhub เลย ช่วยประหยัดโควตาเวลาเปิดแอปซ้ำ/สแกนซ้ำในวันเดียวกัน
+        if (!forceRefresh) {
+          const cached = loadCachedEntry(symbol);
+          if (isCacheEntryFresh(cached, timeframe, needsFundamentals)) {
+            setEntry(symbol, { ...cached, loading: false, error: null, stale: false });
+            return;
+          }
+        }
+
         setEntry(symbol, { loading: true, error: null });
         try {
           const key = tdKey.trim();
-          const fh = fhKey.trim();
           if (!key) throw new Error("ยังไม่ได้ใส่ Twelve Data API key (ตั้งค่า ⚙)");
 
-          const fhPromise = (full && fh)
+          const fhPromise = needsFundamentals
             ? Promise.all([fetchFundamentals(symbol, fh), fetchProfile(symbol, fh)]).catch((fhErr) => {
                 console.warn(`Finnhub error for ${symbol}:`, fhErr);
                 return null;
               })
             : null;
 
-          const quote = await fetchQuote(symbol, key);
-          setEntry(symbol, { quote, loading: full, error: null, stale: false });
-
           if (full) {
+            // ยิง Twelve Data แค่ /time_series ครั้งเดียว แล้วคำนวณ "quote" จากแท่งล่าสุดแทนการ
+            // ยิง /quote แยก — ลด credit ต่อสัญลักษณ์ลงครึ่งหนึ่งเมื่อเทียบกับโค้ดเดิม
             const series = await fetchSeries(symbol, key, timeframe);
-            setEntry(symbol, { series, timeframe, loading: false, stale: false });
+            const quote = deriveQuoteFromSeries(series);
+            setEntry(symbol, { quote, series, timeframe, loading: !!fhPromise, error: null, stale: false });
             saveCachedEntry(symbol, { quote, series, timeframe });
 
             if (fhPromise) {
               const fhResult = await fhPromise;
               if (fhResult) {
                 const [fundamentals, profile] = fhResult;
-                setEntry(symbol, { fundamentals, profile });
+                setEntry(symbol, { fundamentals, profile, loading: false });
                 saveCachedEntry(symbol, { quote, series, timeframe, fundamentals, profile });
+              } else {
+                setEntry(symbol, { loading: false });
               }
             }
           } else {
@@ -2894,16 +2947,25 @@
         }
       }, [tdKey, fhKey, setEntry]);
 
-      const loadSeries = useCallback(async (symbol, timeframe) => {
+      const loadSeries = useCallback(async (symbol, timeframe, opts = {}) => {
+        const { forceRefresh = false } = opts;
+        if (!forceRefresh) {
+          const cached = loadCachedEntry(symbol);
+          if (isCacheEntryFresh(cached, timeframe, false)) {
+            setEntry(symbol, { ...cached, loading: false, error: null, stale: false });
+            return;
+          }
+        }
         setEntry(symbol, { loading: true, error: null });
         try {
           const key = tdKey.trim();
           if (!key) throw new Error("ยังไม่ได้ใส่ Twelve Data API key (ตั้งค่า ⚙)");
           const series = await fetchSeries(symbol, key, timeframe);
-          setEntry(symbol, { series, timeframe, loading: false, error: null, stale: false });
+          const quote = deriveQuoteFromSeries(series);
+          setEntry(symbol, { quote, series, timeframe, loading: false, error: null, stale: false });
           const existing = dataMapRef.current[symbol] || {};
           saveCachedEntry(symbol, {
-            quote: existing.quote,
+            quote,
             series,
             timeframe,
             fundamentals: existing.fundamentals,
@@ -2925,7 +2987,8 @@
       }, [loadSeries, loadSymbol]);
 
       const handleRefreshSymbol = useCallback((s) => {
-        loadSymbol(s, true, dataMapRef.current[s]?.timeframe || DEFAULT_TIMEFRAME);
+        // ผู้ใช้กดรีเฟรชรายตัวเอง = ต้องการข้อมูลใหม่จริง ๆ จึงข้าม TTL cache (forceRefresh)
+        loadSymbol(s, true, dataMapRef.current[s]?.timeframe || DEFAULT_TIMEFRAME, { forceRefresh: true });
       }, [loadSymbol]);
 
       const addSymbol = useCallback((raw) => {
@@ -2948,7 +3011,7 @@
 
       const refreshAll = useCallback(() => {
         if (refreshCooldown > 0) return;
-        symbols.forEach((s) => loadSymbol(s, true, dataMapRef.current[s]?.timeframe || DEFAULT_TIMEFRAME));
+        symbols.forEach((s) => loadSymbol(s, true, dataMapRef.current[s]?.timeframe || DEFAULT_TIMEFRAME, { forceRefresh: true }));
         setRefreshCooldown(20);
         cooldownRef.current = setInterval(() => {
           setRefreshCooldown((c) => {
