@@ -3,14 +3,67 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>US Stock Terminal v3.0 Pro - Weekly Picks (10 Strong Bullish) & Multi-Portfolio</title>
+  <title>US Stock Terminal v3.5 - Weekly Picks (10 Strong Bullish) & Multi-Portfolio</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/prop-types@15.8.1/prop-types.min.js"></script>
   <script src="https://unpkg.com/recharts@2.12.7/umd/Recharts.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ["'IBM Plex Sans Thai'", "'IBM Plex Sans'", "system-ui", "sans-serif"],
+            mono: ["'IBM Plex Mono'", "ui-monospace", "SFMono-Regular", "monospace"],
+          },
+          colors: {
+            zinc: {
+              50: "#f6f6fb",
+              100: "#eaeaf3",
+              200: "#cfd0e2",
+              300: "#a6a8c4",
+              400: "#7d7fa1",
+              500: "#5c5e80",
+              600: "#454764",
+              700: "#31324a",
+              800: "#1e1f33",
+              900: "#141526",
+              950: "#0a0a17",
+            },
+            blue: {
+              50: "#eef1ff",
+              100: "#e0e4ff",
+              200: "#c5cbfe",
+              300: "#a2a9fc",
+              400: "#8087f8",
+              500: "#6366f1",
+              600: "#4f4de5",
+              700: "#423fc9",
+              800: "#3735a2",
+              900: "#302f80",
+              950: "#1c1b4d",
+            },
+          },
+        },
+      },
+    };
+  </script>
   <style>
+    html, body { font-family: 'IBM Plex Sans Thai', 'IBM Plex Sans', system-ui, sans-serif; }
+    .font-mono, code, kbd, pre { font-family: 'IBM Plex Mono', ui-monospace, SFMono-Regular, monospace; }
+    body {
+      font-feature-settings: "tnum" 1, "cv11" 1;
+      background-color: #0a0a17;
+      background-image:
+        radial-gradient(circle at 1px 1px, rgba(128, 135, 248, 0.16) 1px, transparent 0);
+      background-size: 26px 26px;
+      background-attachment: fixed;
+    }
     .no-scrollbar::-webkit-scrollbar { display: none; }
     .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
     .snap-x-mandatory { scroll-snap-type: x mandatory; }
@@ -20,6 +73,23 @@
       to { opacity: 1; transform: translateY(0); }
     }
     .animate-fade-in-up { animation: fade-in-up 0.35s ease-out both; }
+    @media (prefers-reduced-motion: reduce) {
+      .animate-fade-in-up { animation: none; }
+    }
+    ::-webkit-scrollbar { width: 10px; height: 10px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #31324a; border-radius: 999px; border: 2px solid #0a0a17; }
+    ::-webkit-scrollbar-thumb:hover { background: #454764; }
+    * { scrollbar-color: #31324a transparent; scrollbar-width: thin; }
+    input:focus-visible, button:focus-visible, select:focus-visible, a:focus-visible {
+      outline: 2px solid #8087f8;
+      outline-offset: 1px;
+    }
+    @keyframes pulse-live {
+      0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.55); }
+      50% { opacity: 0.7; box-shadow: 0 0 0 4px rgba(52, 211, 153, 0); }
+    }
+    .live-dot { animation: pulse-live 2s ease-in-out infinite; }
   </style>
 </head>
 <body class="h-full bg-zinc-950 text-zinc-100">
@@ -1640,12 +1710,12 @@
       return (
         <ResponsiveContainer width="100%" height={230}>
           <ComposedChart data={data} margin={{ top: 6, right: 52, left: 0, bottom: 0 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#27272a" vertical={false} />
-            <XAxis dataKey="date" tick={{ fill: "#71717a", fontSize: 10 }} axisLine={{ stroke: "#3f3f46" }} tickLine={false} minTickGap={28} />
-            <YAxis domain={[min, max]} tick={{ fill: "#71717a", fontSize: 10 }} axisLine={false} tickLine={false} width={46} tickFormatter={(v) => v.toFixed(0)} />
+            <CartesianGrid strokeDasharray="3 3" stroke="#1e1f33" vertical={false} />
+            <XAxis dataKey="date" tick={{ fill: "#7d7fa1", fontSize: 10 }} axisLine={{ stroke: "#31324a" }} tickLine={false} minTickGap={28} />
+            <YAxis domain={[min, max]} tick={{ fill: "#7d7fa1", fontSize: 10 }} axisLine={false} tickLine={false} width={46} tickFormatter={(v) => v.toFixed(0)} />
             <Tooltip
-              contentStyle={{ background: "#18181b", border: "1px solid #3f3f46", borderRadius: 6, fontSize: 12 }}
-              labelStyle={{ color: "#a1a1aa" }}
+              contentStyle={{ background: "#141526", border: "1px solid #31324a", borderRadius: 10, fontSize: 12, boxShadow: "0 8px 24px rgba(0,0,0,0.45)" }}
+              labelStyle={{ color: "#a6a8c4" }}
               formatter={(v, name) => [`$${v ? v.toFixed(2) : "—"}`, name === "close" ? `ราคาปิด (${tfObj.label})` : name]}
             />
             {resistance.map((r, i) => (
@@ -1656,8 +1726,8 @@
               <ReferenceLine key={`s${i}`} y={s.price} stroke="#34d399" strokeDasharray="4 3" strokeOpacity={0.9 - i * 0.2}
                 label={{ value: `S${i + 1} ${s.price.toFixed(2)} (${s.touches}x)`, position: "right", fill: "#34d399", fontSize: 10 }} />
             ))}
-            <Line type="monotone" dataKey="close" stroke="#60a5fa" strokeWidth={1.75} dot={false} isAnimationActive={false} name="close" />
-            <Line type="monotone" dataKey="ema200" stroke="#a855f7" strokeWidth={1.5} strokeDasharray="3 3" dot={false} isAnimationActive={false} name="EMA200" />
+            <Line type="monotone" dataKey="close" stroke="#8087f8" strokeWidth={1.75} dot={false} isAnimationActive={false} name="close" />
+            <Line type="monotone" dataKey="ema200" stroke="#c084fc" strokeWidth={1.5} strokeDasharray="3 3" dot={false} isAnimationActive={false} name="EMA200" />
           </ComposedChart>
         </ResponsiveContainer>
       );
@@ -3893,34 +3963,38 @@
 
       return (
         <div className="min-h-full bg-zinc-950 text-zinc-100 pb-10">
-          <div className="border-b border-zinc-800 px-4 py-3 flex items-center gap-3 flex-wrap bg-zinc-900/40">
-            <Radar size={20} className="text-blue-400" />
+          <div className="sticky top-0 z-20 border-b border-zinc-800 px-4 py-2.5 flex items-center gap-3 flex-wrap bg-zinc-950/85 backdrop-blur-md shadow-[0_1px_0_0_rgba(128,135,248,0.08)]">
+            <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-blue-500 to-indigo-700 flex items-center justify-center shadow-lg shadow-blue-950/50 shrink-0">
+              <Radar size={18} className="text-white" />
+            </div>
             <div>
-              <div className="font-semibold text-sm flex items-center gap-2">
-                US Stock Terminal <span className="text-[10px] bg-blue-500/20 text-blue-300 border border-blue-500/40 px-1.5 py-0.5 rounded font-mono">v3.0 Pro</span>
+              <div className="font-semibold text-sm flex items-center gap-2 tracking-tight">
+                US Stock Terminal
+                <span className="text-[10px] bg-gradient-to-r from-blue-500/20 to-purple-500/20 text-blue-300 border border-blue-500/40 px-1.5 py-0.5 rounded-full font-mono">v3.5</span>
               </div>
-              <div className="text-[11px] text-zinc-500 font-sans">Twelve Data (ราคา & กราฟ) | Finnhub (งบการเงิน & โลโก้)</div>
+              <div className="text-[11px] text-zinc-500">Twelve Data (ราคา & กราฟ) | Finnhub (งบการเงิน & โลโก้)</div>
             </div>
             <div className="ml-auto flex items-center gap-2">
-              <span className="text-xs font-mono text-zinc-400 border border-zinc-800 bg-zinc-900 px-2 py-1 rounded">
-                TD Calls Today: <strong className="text-blue-400">{tdCallsToday}</strong>
-                <span className="text-zinc-600 mx-1.5">|</span>
+              <span className="text-xs font-mono text-zinc-400 border border-zinc-800 bg-zinc-900/70 px-2.5 py-1.5 rounded-lg flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 live-dot" />
+                TD Calls Today: <strong className="text-blue-300">{tdCallsToday}</strong>
+                <span className="text-zinc-700 mx-1">|</span>
                 {tdRatePerMin}/นาที
               </span>
               <button
                 onClick={exportBackup}
-                className="flex items-center gap-1 text-xs bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 px-2.5 py-1 rounded text-zinc-300"
+                className="flex items-center gap-1 text-xs bg-zinc-900/70 hover:bg-zinc-800 border border-zinc-800 hover:border-zinc-700 px-2.5 py-1.5 rounded-lg text-zinc-300 transition-colors"
                 title="ส่งออกข้อมูลสำรอง"
               >
                 <Download size={13} /> สำรองข้อมูล
               </button>
-              <label className="flex items-center gap-1 text-xs bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 px-2.5 py-1 rounded text-zinc-300 cursor-pointer">
+              <label className="flex items-center gap-1 text-xs bg-zinc-900/70 hover:bg-zinc-800 border border-zinc-800 hover:border-zinc-700 px-2.5 py-1.5 rounded-lg text-zinc-300 cursor-pointer transition-colors">
                 <Upload size={13} /> นำเข้าข้อมูล
                 <input type="file" accept=".json" onChange={importBackup} className="hidden" />
               </label>
               <button
                 onClick={() => setShowSettings((s) => !s)}
-                className="p-1.5 rounded hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 border border-zinc-800 bg-zinc-900"
+                className="p-2 rounded-lg hover:bg-zinc-800 text-zinc-400 hover:text-blue-300 border border-zinc-800 hover:border-zinc-700 bg-zinc-900/70 transition-colors"
               >
                 <Settings size={16} />
               </button>
@@ -3991,25 +4065,25 @@
             <div className="flex gap-1 py-2">
               <button
                 onClick={() => setTab("portfolio")}
-                className={`flex items-center gap-2 px-3.5 py-1.5 rounded-md text-xs font-medium transition ${tab === "portfolio" ? "bg-blue-600 text-white font-bold" : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900"}`}
+                className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-medium transition-all ${tab === "portfolio" ? "bg-gradient-to-r from-blue-600 to-indigo-600 text-white font-semibold shadow-md shadow-blue-950/40" : "text-zinc-400 hover:text-zinc-100 hover:bg-zinc-900"}`}
               >
                 <Briefcase size={14} /> พอร์ตลงทุน (Multi-Portfolio)
               </button>
               <button
                 onClick={() => setTab("watchlist")}
-                className={`flex items-center gap-2 px-3.5 py-1.5 rounded-md text-xs font-medium transition ${tab === "watchlist" ? "bg-blue-600 text-white font-bold" : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900"}`}
+                className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-medium transition-all ${tab === "watchlist" ? "bg-gradient-to-r from-blue-600 to-indigo-600 text-white font-semibold shadow-md shadow-blue-950/40" : "text-zinc-400 hover:text-zinc-100 hover:bg-zinc-900"}`}
               >
                 <Radar size={14} /> Watchlist & Technical
               </button>
               <button
                 onClick={() => setTab("screener")}
-                className={`flex items-center gap-2 px-3.5 py-1.5 rounded-md text-xs font-medium transition ${tab === "screener" ? "bg-blue-600 text-white font-bold" : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900"}`}
+                className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-medium transition-all ${tab === "screener" ? "bg-gradient-to-r from-blue-600 to-indigo-600 text-white font-semibold shadow-md shadow-blue-950/40" : "text-zinc-400 hover:text-zinc-100 hover:bg-zinc-900"}`}
               >
                 <Zap size={14} /> 10x S-Curve Screener
               </button>
               <button
                 onClick={() => setTab("sector")}
-                className={`flex items-center gap-2 px-3.5 py-1.5 rounded-md text-xs font-medium transition ${tab === "sector" ? "bg-blue-600 text-white font-bold" : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900"}`}
+                className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-medium transition-all ${tab === "sector" ? "bg-gradient-to-r from-blue-600 to-indigo-600 text-white font-semibold shadow-md shadow-blue-950/40" : "text-zinc-400 hover:text-zinc-100 hover:bg-zinc-900"}`}
               >
                 <PieChart size={14} /> Sector Rotation
               </button>
