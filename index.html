@@ -10,6 +10,17 @@
   <script src="https://unpkg.com/prop-types@15.8.1/prop-types.min.js"></script>
   <script src="https://unpkg.com/recharts@2.12.7/umd/Recharts.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    .no-scrollbar::-webkit-scrollbar { display: none; }
+    .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    .snap-x-mandatory { scroll-snap-type: x mandatory; }
+    .snap-start { scroll-snap-align: start; }
+    @keyframes fade-in-up {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .animate-fade-in-up { animation: fade-in-up 0.35s ease-out both; }
+  </style>
 </head>
 <body class="h-full bg-zinc-950 text-zinc-100">
   <div id="root" class="h-full"></div>
@@ -303,6 +314,9 @@
     const ChevronRight = ({ size = 16, className = "" }) => (
       <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><polyline points="9 18 15 12 9 6"/></svg>
     );
+    const ChevronLeft = ({ size = 16, className = "" }) => (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><polyline points="15 18 9 12 15 6"/></svg>
+    );
     const AlertTriangle = ({ size = 16, className = "" }) => (
       <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
     );
@@ -374,6 +388,13 @@
       { symbol: "XLC", name: "Communication Services", thName: "สื่อสาร & สื่อ" }
     ];
 
+    // อายุแคชของข้อมูล Sector Rotation ก่อนถือว่า "เก่าเกินไป" ต้องสแกนใหม่อัตโนมัติ
+    // (เดิมสแกนอัตโนมัติแค่ครั้งเดียวต่อการเปิดหน้าเว็บ 1 รอบ ไม่สนอายุข้อมูลเลย ทำให้ถ้าเปิด
+    // แท็บทิ้งไว้ข้ามวันหรือรีเฟรชหน้าถี่ ๆ ข้อมูลอาจเก่ามาก หรือถูกยิงสแกนใหม่ทั้งที่ข้อมูลยังสดอยู่)
+    const SECTOR_CACHE_TTL_MS = 20 * 60 * 1000; // 20 นาที ถือว่ายังสดพอสำหรับ ETF รายสัปดาห์
+    const SECTOR_STALE_WARN_MS = 30 * 60 * 1000; // เกิน 30 นาทีขึ้นไป แสดงป้ายเตือนว่าข้อมูลอาจไม่ทันสมัย
+    const SECTOR_AUTO_REFRESH_MS = 20 * 60 * 1000; // ระยะห่างของการรีเฟรชอัตโนมัติเมื่อเปิดโหมด Auto-refresh
+
     function createQueue(getMinIntervalMs) {
       let last = 0;
       let chain = Promise.resolve();
@@ -417,9 +438,7 @@
     }
 
     /* ---------------- AI portfolio image import (Google Gemini Vision) ---------------- */
-    // ใช้ Interactions API ตัวใหม่ของ Gemini (generateContent รุ่นเก่าถูกปิดสำหรับผู้ใช้ใหม่แล้ว)
-    const GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/interactions";
-    const GEMINI_MODEL = "gemini-3.6-flash";
+    const GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
     const PORTFOLIO_EXTRACT_PROMPT = [
       "คุณกำลังดูภาพหน้าจอ (screenshot) ของพอร์ตหุ้น/แอปเทรดหุ้น ให้อ่านตารางรายการหุ้นในภาพแล้วดึงข้อมูลออกมาเป็น JSON array เท่านั้น",
       "ห้ามใส่คำอธิบาย ห้ามใส่ markdown code fence ห้ามมีข้อความอื่นใดนอกเหนือจาก JSON array",
@@ -441,39 +460,24 @@
       '[{"symbol":"AAPL","shares":10,"avgCost":150.25},{"symbol":"NVDA","shares":5,"avgCost":420.1}]'
     ].join("\n");
 
-    // ดึงข้อความคำตอบล่าสุดจาก response ของ Interactions API
-    // รองรับทั้งสคีมาเก่า (outputs[]) และสคีมาใหม่ (steps[] แบบ structured timeline)
-    function extractInteractionText(data) {
-      if (Array.isArray(data.outputs)) {
-        const block = data.outputs.find((o) => o.type === "text" && o.text);
-        if (block) return block.text;
-      }
-      if (Array.isArray(data.steps)) {
-        for (let i = data.steps.length - 1; i >= 0; i--) {
-          const step = data.steps[i];
-          if (step.type === "model_output" && Array.isArray(step.content)) {
-            const block = step.content.find((c) => c.type === "text" && c.text);
-            if (block) return block.text;
-          }
-        }
-      }
-      return null;
-    }
-
     async function extractPortfolioFromImage(base64Data, mediaType, apiKey) {
-      const res = await fetch(GEMINI_API_BASE, {
+      const res = await fetch(`${GEMINI_API_BASE}?key=${encodeURIComponent(apiKey)}`, {
         method: "POST",
         headers: {
-          "content-type": "application/json",
-          "x-goog-api-key": apiKey
+          "content-type": "application/json"
         },
         body: JSON.stringify({
-          model: GEMINI_MODEL,
-          input: [
-            { type: "text", text: PORTFOLIO_EXTRACT_PROMPT },
-            { type: "image", data: base64Data, mime_type: mediaType }
+          contents: [
+            {
+              role: "user",
+              parts: [
+                { inline_data: { mime_type: mediaType, data: base64Data } },
+                { text: PORTFOLIO_EXTRACT_PROMPT }
+              ]
+            }
           ],
-          generation_config: {
+          generationConfig: {
+            maxOutputTokens: 2048,
             temperature: 0
           }
         })
@@ -489,12 +493,13 @@
       }
 
       const data = await res.json();
-      const text = extractInteractionText(data);
-      if (!text) {
+      const parts = data?.candidates?.[0]?.content?.parts || [];
+      const textBlock = parts.find((p) => typeof p.text === "string" && p.text.trim());
+      if (!textBlock || !textBlock.text) {
         throw new Error("ไม่ได้รับข้อความตอบกลับจาก Gemini");
       }
 
-      let raw = text.trim();
+      let raw = textBlock.text.trim();
       raw = raw.replace(/^```(?:json)?/i, "").replace(/```$/i, "").trim();
 
       let parsed;
@@ -880,6 +885,23 @@
       return n.toLocaleString();
     };
 
+    // แสดงเวลาแบบสัมพัทธ์ (เช่น "2 นาทีที่แล้ว") ใช้กับข้อมูลที่ต้องบอกความสดใหม่ให้ผู้ใช้เห็นชัด
+    // (เดิมแอปมี timestamp เก็บอยู่แล้ว (cachedAt/scannedAt) แต่ไม่เคยแสดงผลบน UI เลย)
+    function formatRelativeTime(ts) {
+      if (!ts) return null;
+      const diffMs = Date.now() - ts;
+      if (diffMs < 0) return "เมื่อสักครู่";
+      const sec = Math.floor(diffMs / 1000);
+      if (sec < 15) return "เมื่อสักครู่";
+      if (sec < 60) return `${sec} วินาทีที่แล้ว`;
+      const min = Math.floor(sec / 60);
+      if (min < 60) return `${min} นาทีที่แล้ว`;
+      const hr = Math.floor(min / 60);
+      if (hr < 24) return `${hr} ชั่วโมงที่แล้ว`;
+      const day = Math.floor(hr / 24);
+      return `${day} วันที่แล้ว`;
+    }
+
     const TREND_STYLE = {
       Uptrend: "text-emerald-400 bg-emerald-500/10 border-emerald-500/30",
       Downtrend: "text-red-400 bg-red-500/10 border-red-500/30",
@@ -1184,6 +1206,163 @@
       return Array.from({ length: poolLen }, (_, i) => pool[(start + i) % poolLen]);
     }
 
+    /* ============================================================
+       RECOMMENDED STOCK CARD + CAROUSEL
+       ============================================================ */
+    function RecommendedStockCard({ rec, idx, alreadyAdded, onAdd }) {
+      const isUp = rec.quote ? +rec.quote.percent_change >= 0 : true;
+      return (
+        <div
+          className="group relative w-[248px] sm:w-[264px] shrink-0 snap-start bg-zinc-900 border border-zinc-800 hover:border-amber-500/50 rounded-xl p-3.5 flex flex-col justify-between transition-all duration-200 hover:-translate-y-1 hover:shadow-lg hover:shadow-amber-500/10"
+        >
+          <div className="absolute -top-2.5 -left-2.5 w-7 h-7 rounded-full bg-gradient-to-br from-amber-400 to-amber-600 text-zinc-950 text-[11px] font-extrabold flex items-center justify-center shadow-md shadow-amber-500/30 ring-2 ring-zinc-950">
+            {idx + 1}
+          </div>
+          <div>
+            <div className="flex items-start justify-between gap-1.5 mb-2.5 pl-1">
+              <div className="flex items-center gap-2">
+                <StockLogo symbol={rec.symbol} logoUrl={rec.profile?.logo} size={30} />
+                <div>
+                  <div className="flex items-center gap-1.5">
+                    <span title={rec.countryMeta?.name}>{rec.countryMeta?.flag}</span>
+                    <span className="font-mono font-bold text-sm text-zinc-100">{rec.symbol}</span>
+                  </div>
+                  <div className="text-[10px] text-zinc-400 truncate max-w-[130px]">
+                    {getStockName(rec.symbol, rec.profile?.name)}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {rec.quote && (
+              <div className="font-mono mb-2.5 flex items-baseline gap-1.5">
+                <span className="text-lg font-bold text-zinc-100">${fmtPrice(+rec.quote.close)}</span>
+                <span className={`text-[11px] font-bold px-1.5 py-0.5 rounded ${isUp ? "text-emerald-400 bg-emerald-500/10" : "text-red-400 bg-red-500/10"}`}>
+                  {isUp ? "▲" : "▼"} {fmtPct(+rec.quote.percent_change)}
+                </span>
+              </div>
+            )}
+
+            <div className="mb-2 flex flex-wrap gap-1">
+              <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${TREND_STYLE[rec.cls.trend]}`}>
+                {TREND_TH[rec.cls.trend]}
+              </span>
+              <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${MOM_STYLE[rec.cls.momentum]}`}>
+                {MOM_TH[rec.cls.momentum]}
+              </span>
+              {rec.capTier && (
+                <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${CAP_TIER_STYLE[rec.capTier]}`}>
+                  {CAP_TIER_TH[rec.capTier]}
+                </span>
+              )}
+            </div>
+            <div className="text-[9px] text-zinc-500 mb-2.5">
+              {rec.countryMeta?.name} ({rec.region}) • RSI {rec.cls.rsi != null ? rec.cls.rsi.toFixed(1) : "—"}
+              {rec.mktCapB > 0 && <> • Mkt Cap ${rec.mktCapB.toFixed(1)}B</>}
+            </div>
+
+            <div className="bg-zinc-950/80 border border-zinc-800/80 rounded-lg p-2.5 text-[10px] text-zinc-300 min-h-[54px]">
+              <div className="text-amber-400 font-bold mb-0.5 flex items-center gap-1">💡 Catalyst</div>
+              <div className="line-clamp-3">{rec.catalyst}</div>
+            </div>
+          </div>
+
+          <div className="pt-2.5 mt-2.5 border-t border-zinc-800">
+            <button
+              onClick={() => onAdd(rec.symbol)}
+              disabled={alreadyAdded}
+              className="w-full py-1.5 bg-blue-600/20 hover:bg-blue-600/30 disabled:opacity-50 disabled:cursor-not-allowed text-blue-400 border border-blue-500/30 rounded-lg text-[11px] font-semibold flex items-center justify-center gap-1 transition"
+            >
+              {alreadyAdded ? "อยู่ใน Watchlist แล้ว" : (<><Plus size={12} /> เพิ่มเข้า Watchlist</>)}
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    function RecommendedCarousel({ items, symbols, onAdd }) {
+      const trackRef = useRef(null);
+      const [canLeft, setCanLeft] = useState(false);
+      const [canRight, setCanRight] = useState(true);
+      const [activeDot, setActiveDot] = useState(0);
+
+      const updateScrollState = useCallback(() => {
+        const el = trackRef.current;
+        if (!el) return;
+        setCanLeft(el.scrollLeft > 4);
+        setCanRight(el.scrollLeft < el.scrollWidth - el.clientWidth - 4);
+        const cardW = el.firstChild ? el.firstChild.getBoundingClientRect().width + 12 : 1;
+        setActiveDot(Math.round(el.scrollLeft / cardW));
+      }, []);
+
+      useEffect(() => {
+        updateScrollState();
+      }, [items, updateScrollState]);
+
+      const scrollByCards = (dir) => {
+        const el = trackRef.current;
+        if (!el) return;
+        const cardW = el.firstChild ? el.firstChild.getBoundingClientRect().width + 12 : 260;
+        el.scrollBy({ left: dir * cardW * 2, behavior: "smooth" });
+      };
+
+      const scrollToIndex = (i) => {
+        const el = trackRef.current;
+        if (!el || !el.children[i]) return;
+        el.children[i].scrollIntoView({ behavior: "smooth", block: "nearest", inline: "start" });
+      };
+
+      return (
+        <div className="relative">
+          <button
+            onClick={() => scrollByCards(-1)}
+            disabled={!canLeft}
+            aria-label="เลื่อนซ้าย"
+            className="hidden sm:flex items-center justify-center absolute -left-3 top-1/2 -translate-y-1/2 z-10 w-8 h-8 rounded-full bg-zinc-900 border border-zinc-700 text-zinc-300 shadow-lg shadow-black/40 hover:bg-zinc-800 hover:text-amber-400 disabled:opacity-0 disabled:pointer-events-none transition"
+          >
+            <ChevronLeft size={16} />
+          </button>
+          <button
+            onClick={() => scrollByCards(1)}
+            disabled={!canRight}
+            aria-label="เลื่อนขวา"
+            className="hidden sm:flex items-center justify-center absolute -right-3 top-1/2 -translate-y-1/2 z-10 w-8 h-8 rounded-full bg-zinc-900 border border-zinc-700 text-zinc-300 shadow-lg shadow-black/40 hover:bg-zinc-800 hover:text-amber-400 disabled:opacity-0 disabled:pointer-events-none transition"
+          >
+            <ChevronRight size={16} />
+          </button>
+
+          <div
+            ref={trackRef}
+            onScroll={updateScrollState}
+            className="flex gap-3 overflow-x-auto no-scrollbar snap-x-mandatory scroll-pl-1 pb-1 pt-2.5 px-1"
+          >
+            {items.map((rec, idx) => (
+              <RecommendedStockCard
+                key={rec.symbol}
+                rec={rec}
+                idx={idx}
+                alreadyAdded={symbols.includes(rec.symbol)}
+                onAdd={onAdd}
+              />
+            ))}
+          </div>
+
+          {items.length > 1 && (
+            <div className="flex items-center justify-center gap-1.5 mt-3">
+              {items.map((rec, i) => (
+                <button
+                  key={rec.symbol}
+                  onClick={() => scrollToIndex(i)}
+                  aria-label={`ไปที่หุ้น #${i + 1}`}
+                  className={`h-1.5 rounded-full transition-all ${i === activeDot ? "w-5 bg-amber-400" : "w-1.5 bg-zinc-700 hover:bg-zinc-600"}`}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      );
+    }
+
     function WeeklyRecommendedPanel({ tdKey, fhKey, dataMap, loadSymbol, loadFundamentalsOnly, symbols, onAdd }) {
       const [loading, setLoading] = useState(false);
       const [scanProgress, setScanProgress] = useState({ done: 0, total: 0, found: 0 });
@@ -1294,10 +1473,11 @@
           // รอบที่ 3: ดึงข้อมูลพื้นฐาน (Finnhub) เฉพาะหุ้นที่ "ผ่านเกณฑ์แล้วเท่านั้น" เพื่อทราบ
           // Market Cap สำหรับจัดกลุ่ม Small/Mid/Large Cap — ลดจำนวนเรียก Finnhub จากหลักพันเหลือ
           // แค่หลักสิบ (เท่าจำนวนหุ้นที่ผ่านเกณฑ์จริง) ต่อรอบสแกน
+          // ยิงทุกตัวพร้อมกัน (Promise.all) แทนการ await ทีละตัวตามลำดับ — fhQueue ยังคุมอัตรา
+          // การยิงจริงให้ไม่เกิน fhMinIntervalMs ต่อคำขอเหมือนเดิมทุกประการ แค่ตัดเวลารอผลลัพธ์
+          // (network round-trip) ที่เคยต้องต่อคิวกันทีละตัวออกไป ทำให้รอบนี้เสร็จเร็วขึ้น
           if (fhKey && loadFundamentalsOnly && foundSymbols.length > 0) {
-            for (const sym of foundSymbols) {
-              await loadFundamentalsOnly(sym);
-            }
+            await Promise.all(foundSymbols.map((sym) => loadFundamentalsOnly(sym)));
           }
         } finally {
           setLoading(false);
@@ -1422,76 +1602,7 @@
           )}
 
           {recommended.length > 0 && (
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3">
-              {recommended.map((rec, idx) => {
-                const alreadyAdded = symbols.includes(rec.symbol);
-                return (
-                  <div key={rec.symbol} className="bg-zinc-900 border border-zinc-800 hover:border-amber-500/40 rounded-lg p-3 flex flex-col justify-between transition">
-                    <div>
-                      <div className="flex items-start justify-between gap-1.5 mb-2">
-                        <div className="flex items-center gap-2">
-                          <StockLogo symbol={rec.symbol} logoUrl={rec.profile?.logo} size={28} />
-                          <div>
-                            <div className="flex items-center gap-1">
-                              <span title={rec.countryMeta?.name}>{rec.countryMeta?.flag}</span>
-                              <span className="font-mono font-bold text-sm text-zinc-100">{rec.symbol}</span>
-                              <span className="text-[9px] font-bold px-1 py-0.1 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
-                                #{idx + 1}
-                              </span>
-                            </div>
-                            <div className="text-[10px] text-zinc-400 truncate max-w-[100px]">
-                              {getStockName(rec.symbol, rec.profile?.name)}
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-
-                      {rec.quote && (
-                        <div className="font-mono mb-2">
-                          <span className="text-sm font-bold text-zinc-100">${fmtPrice(+rec.quote.close)}</span>
-                          <span className={`ml-1.5 text-[11px] font-semibold ${+rec.quote.percent_change >= 0 ? "text-emerald-400" : "text-red-400"}`}>
-                            {fmtPct(+rec.quote.percent_change)}
-                          </span>
-                        </div>
-                      )}
-
-                      <div className="mb-1.5 flex flex-wrap gap-1">
-                        <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${TREND_STYLE[rec.cls.trend]}`}>
-                          {TREND_TH[rec.cls.trend]}
-                        </span>
-                        <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${MOM_STYLE[rec.cls.momentum]}`}>
-                          {MOM_TH[rec.cls.momentum]}
-                        </span>
-                        {rec.capTier && (
-                          <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${CAP_TIER_STYLE[rec.capTier]}`}>
-                            {CAP_TIER_TH[rec.capTier]}
-                          </span>
-                        )}
-                      </div>
-                      <div className="text-[9px] text-zinc-500 mb-2">
-                        {rec.countryMeta?.name} ({rec.region}) • RSI {rec.cls.rsi != null ? rec.cls.rsi.toFixed(1) : "—"}
-                        {rec.mktCapB > 0 && <> • Mkt Cap ${rec.mktCapB.toFixed(1)}B</>}
-                      </div>
-
-                      <div className="bg-zinc-950/80 border border-zinc-800/80 rounded p-2 text-[10px] text-zinc-300">
-                        <div className="text-amber-400 font-bold mb-0.5">💡 Catalyst</div>
-                        <div>{rec.catalyst}</div>
-                      </div>
-                    </div>
-
-                    <div className="pt-2 mt-2 border-t border-zinc-800">
-                      <button
-                        onClick={() => onAdd(rec.symbol)}
-                        disabled={alreadyAdded}
-                        className="w-full py-1 bg-blue-600/20 hover:bg-blue-600/30 disabled:opacity-50 disabled:cursor-not-allowed text-blue-400 border border-blue-500/30 rounded text-[11px] font-semibold flex items-center justify-center gap-1 transition"
-                      >
-                        {alreadyAdded ? "อยู่ใน Watchlist แล้ว" : (<><Plus size={12} /> เพิ่มเข้า Watchlist</>)}
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+            <RecommendedCarousel items={recommended} symbols={symbols} onAdd={onAdd} />
           )}
         </div>
       );
@@ -2709,6 +2820,7 @@
 
       const change = quote ? +quote.percent_change : null;
       const isUp = change != null && change >= 0;
+      const updatedAgo = entry?.cachedAt ? formatRelativeTime(entry.cachedAt) : null;
 
       return (
         <div className="bg-zinc-900 border border-zinc-800 rounded-lg overflow-hidden">
@@ -2751,6 +2863,11 @@
                 <div className="text-right font-mono">
                   <div className="text-zinc-100 text-base leading-tight">${fmtPrice(+quote.close)}</div>
                   <div className={`text-xs leading-tight ${isUp ? "text-emerald-400" : "text-red-400"}`}>{fmtPct(change)}</div>
+                  {updatedAgo && (
+                    <div className="text-[9px] text-zinc-500 leading-tight mt-0.5" title="เวลาที่ดึงข้อมูลราคาล่าสุด">
+                      อัปเดต {updatedAgo}
+                    </div>
+                  )}
                 </div>
               )}
               <button onClick={() => onRefresh(symbol)} disabled={loading} className="p-1.5 rounded hover:bg-zinc-800 text-zinc-500 hover:text-zinc-300 disabled:opacity-40">
@@ -2836,10 +2953,20 @@
       const [loading, setLoading] = useState(false);
       const [progress, setProgress] = useState(0);
       const [error, setError] = useState(null);
+      const [scannedAt, setScannedAt] = useState(null);
+      const [autoRefresh, setAutoRefresh] = useState(false);
+      // ใช้ tick นี้แค่บังคับ re-render ทุก 30 วิ เพื่อให้ข้อความ "x นาทีที่แล้ว" ขยับตามเวลาจริง
+      const [, setTick] = useState(0);
 
       const [sortField, setSortField] = useState("score");
       const [sortAsc, setSortAsc] = useState(false);
 
+      // สแกนเร็วขึ้น: เดิมยิง SPY + 11 sector ETF แบบ "ทีละตัวตามลำดับ" (await ทีละคำขอ) ทำให้
+      // เวลารวมของการสแกน = (จำนวนคำขอ) x (ช่วงเวลาขั้นต่ำต่อคำขอ + เวลาปิ๊งปั๊งเครือข่ายของคำขอนั้น)
+      // ตอนนี้ยิงคำขอทั้งหมดเข้าคิว (tdQueue) พร้อมกันทีเดียวด้วย Promise.allSettled แทน — คิวยังคง
+      // จำกัดอัตราการยิงจริงตาม tdRatePerMin ของผู้ใช้เหมือนเดิมทุกประการ (ไม่มีทางยิงเกินโควตา)
+      // แต่ตัดเวลาปิ๊งปั๊งเครือข่ายที่ต้องรอซ้อนทับกันไปทีละคำขอออก ทำให้สแกนเสร็จเร็วขึ้นชัดเจน
+      // โดยเฉพาะผู้ใช้แพ็กเกจ Twelve Data ที่มีโควตาสูง (rate limit ต่อนาทีมาก ๆ)
       const scanSectors = useCallback(async () => {
         if (!tdKey || !tdKey.trim()) {
           setError("โปรดใส่ Twelve Data API key ในเมนู ⚙ เพื่อเริ่มการสแกนอัตโนมัติ");
@@ -2849,15 +2976,35 @@
         setError(null);
         setProgress(0);
 
-        const results = [];
-        let spySeries = null;
+        const totalRequests = SECTOR_ETFS.length + 1; // +1 สำหรับ SPY (benchmark)
+        let doneRequests = 0;
+        const bumpProgress = () => {
+          doneRequests += 1;
+          setProgress(Math.round((doneRequests / totalRequests) * 100));
+        };
 
         try {
-          try {
-            spySeries = await fetchSeries("SPY", tdKey, "1week", 70);
-          } catch (e) {
-            console.warn("Couldn't fetch SPY, using absolute sector metrics.");
-          }
+          const spyPromise = fetchSeries("SPY", tdKey, "1week", 70)
+            .then((series) => { bumpProgress(); return series; })
+            .catch((e) => {
+              console.warn("Couldn't fetch SPY, using absolute sector metrics.", e);
+              bumpProgress();
+              return null;
+            });
+
+          const sectorPromises = SECTOR_ETFS.map((sec) =>
+            fetchSeries(sec.symbol, tdKey, "1week", 70)
+              .then((series) => { bumpProgress(); return { sec, series }; })
+              .catch((err) => {
+                console.error(`Failed to fetch ${sec.symbol}`, err);
+                bumpProgress();
+                return { sec, series: null };
+              })
+          );
+
+          // ทุกคำขอถูก "ส่งเข้าคิว" พร้อมกันตั้งแต่ต้น (ไม่รอผลลัพธ์ของตัวก่อนหน้าก่อนส่งตัวถัดไป)
+          // ระบบคิวจะทยอยไล่ยิงตามอัตราที่ตั้งไว้เองโดยอัตโนมัติ
+          const [spySeries, sectorResults] = await Promise.all([spyPromise, Promise.all(sectorPromises)]);
 
           const spyReturns = spySeries && spySeries.length >= 20 ? {
             r1w: ((spySeries[spySeries.length - 1].close - spySeries[spySeries.length - 2].close) / spySeries[spySeries.length - 2].close) * 100,
@@ -2865,52 +3012,47 @@
             r3m: ((spySeries[spySeries.length - 1].close - spySeries[0].close) / spySeries[0].close) * 100,
           } : { r1w: 0, r1m: 0, r3m: 0 };
 
-          for (let i = 0; i < SECTOR_ETFS.length; i++) {
-            const sec = SECTOR_ETFS[i];
-            setProgress(Math.round(((i + 1) / SECTOR_ETFS.length) * 100));
+          const results = [];
+          for (const { sec, series } of sectorResults) {
+            if (series && series.length >= 12) {
+              const len = series.length;
+              const pNow = series[len - 1].close;
+              const p1w = series[Math.max(0, len - 2)].close;
+              const p1m = series[Math.max(0, len - 5)].close;
+              const p3m = series[0].close;
 
-            try {
-              const series = await fetchSeries(sec.symbol, tdKey, "1week", 70);
-              if (series && series.length >= 12) {
-                const len = series.length;
-                const pNow = series[len - 1].close;
-                const p1w = series[Math.max(0, len - 2)].close;
-                const p1m = series[Math.max(0, len - 5)].close;
-                const p3m = series[0].close;
+              const r1w = ((pNow - p1w) / p1w) * 100;
+              const r1m = ((pNow - p1m) / p1m) * 100;
+              const r3m = ((pNow - p3m) / p3m) * 100;
 
-                const r1w = ((pNow - p1w) / p1w) * 100;
-                const r1m = ((pNow - p1m) / p1m) * 100;
-                const r3m = ((pNow - p3m) / p3m) * 100;
+              const rel1w = r1w - spyReturns.r1w;
+              const rel1m = r1m - spyReturns.r1m;
+              const rel3m = r3m - spyReturns.r3m;
 
-                const rel1w = r1w - spyReturns.r1w;
-                const rel1m = r1m - spyReturns.r1m;
-                const rel3m = r3m - spyReturns.r3m;
+              let quadrant = "Lagging";
+              if (rel1m >= 0 && rel1w >= 0) quadrant = "Leading";
+              else if (rel1m >= 0 && rel1w < 0) quadrant = "Weakening";
+              else if (rel1m < 0 && rel1w >= 0) quadrant = "Improving";
+              else quadrant = "Lagging";
 
-                let quadrant = "Lagging";
-                if (rel1m >= 0 && rel1w >= 0) quadrant = "Leading";
-                else if (rel1m >= 0 && rel1w < 0) quadrant = "Weakening";
-                else if (rel1m < 0 && rel1w >= 0) quadrant = "Improving";
-                else quadrant = "Lagging";
+              const score = (rel1w * 0.4) + (rel1m * 0.4) + (rel3m * 0.2);
 
-                const score = (rel1w * 0.4) + (rel1m * 0.4) + (rel3m * 0.2);
-
-                results.push({
-                  ...sec,
-                  price: pNow,
-                  r1w, r1m, r3m,
-                  rel1w, rel1m, rel3m,
-                  quadrant,
-                  score
-                });
-              }
-            } catch (err) {
-              console.error(`Failed to fetch ${sec.symbol}`, err);
+              results.push({
+                ...sec,
+                price: pNow,
+                r1w, r1m, r3m,
+                rel1w, rel1m, rel3m,
+                quadrant,
+                score
+              });
             }
           }
 
           results.sort((a, b) => b.score - a.score);
+          const now = Date.now();
           setSectorData(results);
-          saveStore("us-dash-sector-data", results);
+          setScannedAt(now);
+          saveStore("us-dash-sector-data", { items: results, scannedAt: now });
         } catch (e) {
           setError(e.message || "เกิดข้อผิดพลาดในการโหลดข้อมูล Sector");
         } finally {
@@ -2918,16 +3060,47 @@
         }
       }, [tdKey]);
 
+      // โหลดแคชที่มีอยู่ก่อน แล้วสแกนใหม่อัตโนมัติเฉพาะตอนที่ข้อมูล "เก่าเกินไปแล้วจริง ๆ"
+      // (เดิมใช้ตัวแปร sectorAutoScanned สแกนอัตโนมัติแค่ครั้งเดียวต่อการโหลดหน้าเว็บ ไม่สนอายุ
+      // ข้อมูลเลย — พอรีเฟรชหน้าถี่ ๆ ก็ยิง API ซ้ำทั้งที่ข้อมูลยังสดอยู่ หรือถ้าเปิดแท็บค้างไว้นาน
+      // ข้อมูลก็เก่ามากโดยไม่มีการเตือนหรือรีเฟรชให้เลย)
       useEffect(() => {
-        loadStore("us-dash-sector-data", []).then((cached) => {
-          if (cached && cached.length) setSectorData(cached);
-        });
+        let cancelled = false;
+        loadStore("us-dash-sector-data", null).then((cached) => {
+          if (cancelled || !cached) return;
+          // รองรับข้อมูลแคชแบบเก่า (เป็น array ล้วน ไม่มี timestamp) เพื่อไม่ให้ผู้ใช้เดิมเสียข้อมูล
+          const items = Array.isArray(cached) ? cached : cached.items;
+          const ts = Array.isArray(cached) ? null : cached.scannedAt;
+          if (items && items.length) {
+            setSectorData(items);
+            setScannedAt(ts || null);
+          }
 
-        if (tdKey && tdKey.trim() && !sectorAutoScanned) {
-          sectorAutoScanned = true;
-          scanSectors();
-        }
+          const age = ts ? Date.now() - ts : Infinity;
+          if (tdKey && tdKey.trim() && !sectorAutoScanned && age >= SECTOR_CACHE_TTL_MS) {
+            sectorAutoScanned = true;
+            scanSectors();
+          }
+        });
+        return () => { cancelled = true; };
       }, [tdKey, scanSectors]);
+
+      // แสดงเวลาแบบสัมพัทธ์ให้ขยับเองทุก 30 วิ โดยไม่ต้องยิง API ใหม่ (แค่ re-render ข้อความ)
+      useEffect(() => {
+        const id = setInterval(() => setTick((t) => t + 1), 30000);
+        return () => clearInterval(id);
+      }, []);
+
+      // โหมด Auto-refresh: สแกนซ้ำอัตโนมัติทุก SECTOR_AUTO_REFRESH_MS ตราบเท่าที่ยังเปิดหน้านี้ค้างไว้
+      // และมี API key แล้ว ช่วยให้ข้อมูล Sector Rotation ทันสมัยต่อเนื่องโดยไม่ต้องกดสแกนเอง
+      useEffect(() => {
+        if (!autoRefresh || !tdKey || !tdKey.trim()) return undefined;
+        const id = setInterval(() => scanSectors(), SECTOR_AUTO_REFRESH_MS);
+        return () => clearInterval(id);
+      }, [autoRefresh, tdKey, scanSectors]);
+
+      const dataAgeMs = scannedAt ? Date.now() - scannedAt : null;
+      const isStale = dataAgeMs != null && dataAgeMs >= SECTOR_STALE_WARN_MS;
 
       const sortedSectorData = useMemo(() => {
         return [...sectorData].sort((a, b) => {
@@ -2972,16 +3145,36 @@
               <div className="text-xs text-zinc-400 mt-1">
                 เปรียบเทียบความแข็งแกร่งสัมพัทธ์ (Relative Strength) ของ 11 Sectors เทียบกับ S&P 500 (SPY)
               </div>
+              {scannedAt && (
+                <div className={`text-[11px] mt-1.5 flex items-center gap-1.5 ${isStale ? "text-amber-400" : "text-zinc-500"}`}>
+                  {isStale && <AlertTriangle size={11} className="shrink-0" />}
+                  <span>
+                    อัปเดตล่าสุด {formatRelativeTime(scannedAt)}
+                    {isStale ? " • ข้อมูลอาจไม่ทันสมัย กดสแกนใหม่อีกครั้ง" : ""}
+                  </span>
+                </div>
+              )}
             </div>
 
-            <button
-              onClick={scanSectors}
-              disabled={loading}
-              className="flex items-center gap-2 px-4 py-2 rounded bg-blue-600 text-white font-medium text-xs hover:bg-blue-500 disabled:opacity-50 transition"
-            >
-              <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
-              {loading ? `กำลังสแกนเรียลไทม์... (${progress}%)` : "สแกน Sector อัปเดตใหม่"}
-            </button>
+            <div className="flex items-center gap-3">
+              <label className="flex items-center gap-1.5 text-[11px] text-zinc-400 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={autoRefresh}
+                  onChange={(e) => setAutoRefresh(e.target.checked)}
+                  className="accent-blue-500"
+                />
+                Auto-refresh ทุก 20 นาที
+              </label>
+              <button
+                onClick={scanSectors}
+                disabled={loading}
+                className="flex items-center gap-2 px-4 py-2 rounded bg-blue-600 text-white font-medium text-xs hover:bg-blue-500 disabled:opacity-50 transition"
+              >
+                <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
+                {loading ? `กำลังสแกนเรียลไทม์... (${progress}%)` : "สแกน Sector อัปเดตใหม่"}
+              </button>
+            </div>
           </div>
 
           {error && (
@@ -3459,7 +3652,9 @@
             // ยิง /quote แยก — ลด credit ต่อสัญลักษณ์ลงครึ่งหนึ่งเมื่อเทียบกับโค้ดเดิม
             const series = await fetchSeries(symbol, key, timeframe);
             const quote = deriveQuoteFromSeries(series);
-            let result = { quote, series, timeframe, loading: !!fhPromise, error: null, stale: false };
+            // ใส่ cachedAt ตั้งแต่ตอนดึงสด ๆ ด้วย (เดิมมีแค่ตอนอ่านจากแคชเก่าเท่านั้น) เพื่อให้ UI
+            // แสดง "อัปเดตล่าสุดเมื่อไร" ได้เสมอไม่ว่าข้อมูลจะมาจากแคชหรือดึงใหม่ก็ตาม
+            let result = { quote, series, timeframe, loading: !!fhPromise, error: null, stale: false, cachedAt: Date.now() };
             setEntry(symbol, result);
             saveCachedEntry(symbol, result);
 
@@ -3525,7 +3720,8 @@
           if (!key) throw new Error("ยังไม่ได้ใส่ Twelve Data API key (ตั้งค่า ⚙)");
           const series = await fetchSeries(symbol, key, timeframe);
           const quote = deriveQuoteFromSeries(series);
-          setEntry(symbol, { quote, series, timeframe, loading: false, error: null, stale: false });
+          const cachedAt = Date.now();
+          setEntry(symbol, { quote, series, timeframe, loading: false, error: null, stale: false, cachedAt });
           const existing = dataMapRef.current[symbol] || {};
           saveCachedEntry(symbol, {
             quote,
@@ -3820,13 +4016,20 @@
             </div>
           </div>
 
+          {/* เดิมแต่ละแท็บใช้ {tab === "x" && (...)} ซึ่งทำให้ React "ถอด (unmount)" คอมโพเนนต์ของ
+              แท็บที่ไม่ได้ดูอยู่ทั้งหมดออกจากหน้าจอทันที เมื่อสลับกลับมาใหม่ React จะ "สร้างใหม่
+              (mount ใหม่)" ทั้งคอมโพเนนต์ ทำให้ state ภายในของแท็บนั้นรีเซ็ตหมด (เช่น sectorData,
+              scannedAt, universe ของ WeeklyRecommendedPanel, ฟอร์ม/ตัวกรองต่าง ๆ ใน PortfolioView)
+              และ effect ที่ผูกกับ "ตอน mount" ก็ถูกยิงซ้ำใหม่ทุกครั้ง (เช่นสแกน Sector/Weekly ใหม่)
+              ตอนนี้เปลี่ยนมาให้ "mount ทุกแท็บไว้ตลอด" แล้วใช้ CSS class "hidden" ซ่อนแท็บที่ไม่ได้
+              ดูอยู่แทน (display:none) — คอมโพเนนต์และ state ภายในจะยังอยู่ครบ ไม่ถูกทำลาย/สร้างใหม่
+              เวลาสลับแท็บไปมา จึงไม่ต้องโหลด/สแกนข้อมูลซ้ำอีกเลย */}
           <div className="max-w-7xl mx-auto p-4 space-y-4">
-            {tab === "portfolio" && (
+            <div className={tab === "portfolio" ? "" : "hidden"}>
               <PortfolioView tdKey={tdKey} geminiKey={geminiKey} dataMap={dataMap} loadSymbol={loadSymbol} />
-            )}
+            </div>
 
-            {tab === "watchlist" && (
-              <div className="space-y-4">
+            <div className={tab === "watchlist" ? "space-y-4" : "hidden"}>
                 <WeeklyRecommendedPanel
                   tdKey={tdKey}
                   fhKey={fhKey}
@@ -3904,11 +4107,9 @@
                     </div>
                   )}
                 </div>
-              </div>
-            )}
+            </div>
 
-            {tab === "screener" && (
-              <div className="space-y-4">
+            <div className={tab === "screener" ? "space-y-4" : "hidden"}>
                 {!fhKey.trim() && (
                   <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 text-xs text-amber-300 flex items-start gap-2">
                     <span>⚠️</span>
@@ -3970,12 +4171,11 @@
                     </div>
                   )}
                 </div>
-              </div>
-            )}
+            </div>
 
-            {tab === "sector" && (
+            <div className={tab === "sector" ? "" : "hidden"}>
               <SectorRotationView tdKey={tdKey} />
-            )}
+            </div>
           </div>
         </div>
       );
