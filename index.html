@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>US Stock Terminal v3.5 - Weekly Picks (10 Strong Bullish) & Multi-Portfolio</title>
+  <title>US Stock Terminal - Weekly Picks (10 Strong Bullish) & Multi-Portfolio</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
@@ -507,27 +507,32 @@
       }
     }
 
-    /* ---------------- AI portfolio image import (Google Gemini Vision) ---------------- */
-    const GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
+    /* ---------------- AI transaction image import (Google Gemini Vision) ---------------- */
+    const GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent";
     const PORTFOLIO_EXTRACT_PROMPT = [
-      "คุณกำลังดูภาพหน้าจอ (screenshot) ของพอร์ตหุ้น/แอปเทรดหุ้น ให้อ่านตารางรายการหุ้นในภาพแล้วดึงข้อมูลออกมาเป็น JSON array เท่านั้น",
+      "คุณกำลังดูภาพหน้าจอ (screenshot) ของการทำรายการซื้อขายหุ้น (เช่น ใบยืนยันคำสั่งซื้อ/ขาย, ตารางประวัติการทำรายการ (transaction/activity history), หรือหน้าจอแอปโบรกเกอร์) ให้วิเคราะห์ว่าภาพนี้มีการทำรายการซื้อ/ขายหุ้นอะไรบ้าง แล้วดึงข้อมูลออกมาเป็น JSON array เท่านั้น",
       "ห้ามใส่คำอธิบาย ห้ามใส่ markdown code fence ห้ามมีข้อความอื่นใดนอกเหนือจาก JSON array",
       "",
-      "สำหรับหุ้นแต่ละตัวในภาพ ให้สร้าง object ที่มี field ดังนี้:",
+      "สำหรับการทำรายการแต่ละรายการในภาพ ให้สร้าง object ที่มี field ดังนี้:",
       '- \"symbol\": ticker หุ้นแบบตัวพิมพ์ใหญ่ (เช่น \"AAPL\") ตัดคำนำหน้า/ต่อท้ายของตลาดหรือสกุลเงินออก',
-      '- \"shares\": จำนวนหุ้น/หน่วยที่ถืออยู่ (ตัวเลข ไม่ใช่ string) รองรับทศนิยม',
-      '- \"avgCost\": ราคาต้นทุนเฉลี่ยต่อหุ้น เป็นตัวเลข (ไม่ใช่ต้นทุนรวม)',
+      '- \"action\": \"BUY\" หากเป็นการซื้อ/เพิ่มหุ้น หรือ \"SELL\" หากเป็นการขาย/ตัดขายหุ้น ให้พิจารณาจากคำในภาพ (เช่น Buy, Bought, ซื้อ, Sell, Sold, ขาย, สีเขียว/แดงของยอดเงิน) หากไม่แน่ใจจริง ๆ ให้ใส่ \"BUY\"',
+      '- \"shares\": จำนวนหุ้น/หน่วยที่ทำรายการ (ตัวเลข ไม่ใช่ string) รองรับทศนิยม ถ้าภาพไม่มีคอลัมน์จำนวนหุ้นให้ระบุเลย ให้ใส่ค่าเป็น null (อย่าข้ามทั้งรายการ ให้ผู้ใช้กรอกจำนวนหุ้นเองภายหลัง)',
+      '- \"price\": ราคาต่อหุ้นที่ทำรายการ ณ ตอนนั้น เป็นตัวเลข (ไม่ใช่มูลค่ารวม) ถ้าคำนวณไม่ได้ให้ใส่ null',
+      '- \"amount\": มูลค่ารวมเป็นเงินของรายการนั้น (จำนวนหุ้น x ราคา) เป็นตัวเลขบวกเสมอ (ไม่ต้องสนใจเครื่องหมาย +/- หรือสีที่แสดงในภาพ) ถ้าภาพไม่มีให้ใส่ null',
+      '- \"date\": วันที่ทำรายการในรูปแบบ \"YYYY-MM-DD\" หากอ่านได้จากภาพ มิฉะนั้นให้ใส่ null',
       "",
-      "กฎการคำนวณเมื่อข้อมูลไม่ได้แสดงตรง ๆ:",
-      "- ถ้าภาพแสดง \"ต้นทุนรวม\" (total cost) แทนที่จะเป็นต้นทุนต่อหุ้น ให้คำนวณ avgCost = ต้นทุนรวม / จำนวนหุ้น",
-      "- ถ้าภาพไม่มีต้นทุนแต่มีราคาปัจจุบันต่อหุ้นและกำไร/ขาดทุนเป็น % ให้คำนวณ avgCost = ราคาปัจจุบัน / (1 + (%กำไรขาดทุน/100))",
-      "- ถ้าภาพไม่มีต้นทุนแต่มีราคาปัจจุบันต่อหุ้นและกำไร/ขาดทุนเป็นจำนวนเงินรวม ให้คำนวณกำไรขาดทุนต่อหุ้นก่อน (หารด้วยจำนวนหุ้น) แล้วค่อย avgCost = ราคาปัจจุบัน - กำไรขาดทุนต่อหุ้น",
-      "- ถ้าคำนวณ avgCost ไม่ได้จริง ๆ ให้ใส่ค่าเป็น null",
+      "กฎการอ่านข้อมูลและการคำนวณเมื่อข้อมูลไม่ได้แสดงตรง ๆ:",
+      '- บางตารางจะแสดงรายการเป็นข้อความประโยคในคอลัมน์เดียว เช่น \"Bought Oklo Inc. OKLO\" หรือ \"Sold CoreWeave, Inc. CRWV\" ให้ดึงคำว่า Bought/Sold (หรือซื้อ/ขาย) มาระบุ action และดึง ticker ที่อยู่ท้ายประโยคนั้นมาเป็น symbol',
+      '- ถ้าตารางมีคอลัมน์ \"Type\"/\"ประเภท\" ให้พิจารณาเฉพาะแถวที่เป็นการซื้อขายหุ้นจริง (เช่น Trade, Order, ซื้อ, ขาย) เท่านั้น ข้ามแถวที่เป็น Fees, Interest, Dividend, Transfer, Deposit, Withdraw, ค่าธรรมเนียม, ดอกเบี้ย หรือรายการที่ไม่ใช่การซื้อขายหุ้น/ETF จริง',
+      "- ถ้าภาพแสดง \"มูลค่ารวม\"/\"Amount\" ของรายการแทนที่จะเป็นราคาต่อหุ้น และมีจำนวนหุ้นให้เห็นด้วย ให้คำนวณ price = มูลค่ารวม / จำนวนหุ้น",
       "- อย่าเดาตัวเลขที่มองไม่เห็นในภาพ ใช้เฉพาะตัวเลขที่อ่านได้หรือคำนวณได้จากตัวเลขที่อ่านได้เท่านั้น",
+      "- ถ้าภาพเป็นภาพรวมพอร์ต (snapshot) ที่ไม่ได้ระบุว่าเป็นรายการซื้อหรือขาย ให้ถือว่าแต่ละรายการเป็น \"BUY\" ของจำนวนหุ้นที่ถืออยู่ ด้วยราคาต้นทุนเฉลี่ยที่แสดง (หรือคำนวณจากกำไร/ขาดทุนถ้ามี)",
       "- ข้ามรายการที่ไม่ใช่หุ้น/ETF จริง (เช่น เงินสด, ยอดรวมทั้งพอร์ต)",
+      "- ห้ามข้ามรายการทั้งที่ระบุ symbol และ action ได้ชัดเจน แม้ว่าจะหาจำนวนหุ้นหรือราคาไม่ได้ก็ตาม",
+      "- สำคัญมาก: ต้องอ่านและดึงข้อมูล \"ทุกแถว\" ที่เป็นการซื้อขายหุ้นซึ่งปรากฏอยู่ในภาพ ไล่จากบนลงล่างจนถึงแถวสุดท้ายที่มองเห็นในภาพ ห้ามหยุดหลังจากดึงมาได้แค่แถวแรกหรือไม่กี่แถวเด็ดขาด นับจำนวนแถวที่เป็นการซื้อขายหุ้นในภาพก่อน แล้วตรวจสอบว่า array ที่ตอบมีจำนวน object เท่ากับที่นับได้",
       "",
       "ตัวอย่างรูปแบบผลลัพธ์ที่ถูกต้อง (ต้องเป็น JSON array ล้วน ๆ เท่านั้น):",
-      '[{"symbol":"AAPL","shares":10,"avgCost":150.25},{"symbol":"NVDA","shares":5,"avgCost":420.1}]'
+      '[{"symbol":"AAPL","action":"BUY","shares":10,"price":150.25,"amount":1502.5,"date":"2026-03-14"},{"symbol":"NVDA","action":"SELL","shares":null,"price":null,"amount":41.21,"date":"2026-09-09"}]'
     ].join("\n");
 
     async function extractPortfolioFromImage(base64Data, mediaType, apiKey) {
@@ -547,8 +552,22 @@
             }
           ],
           generationConfig: {
-            maxOutputTokens: 2048,
-            temperature: 0
+            maxOutputTokens: 32768,
+            temperature: 0,
+            thinkingConfig: {
+              // gemini-3.x ใช้ thinkingLevel ไม่ใช่ thinkingBudget (แบบ gemini-2.5) — ส่ง thinkingBudget
+              // ไปจะโดน 400 Request contains an invalid argument ทันที เพราะพารามิเตอร์ไม่ตรงกับรุ่นโมเดล
+              // "low" คือระดับต่ำสุดที่ใช้ได้โดยไม่ต้องจัดการ thought signature เพิ่ม (ต่างจาก "minimal")
+              thinkingLevel: "low"
+            },
+            // บังคับให้ Gemini ตอบเป็น JSON ล้วน ๆ ผ่าน structured output ของ API โดยตรง
+            // แทนที่จะพึ่งแค่คำสั่งในพรอมต์ ป้องกันกรณีโมเดลแถมคำอธิบายหรือ markdown มาด้วย
+            // จนทำให้ parse เป็น JSON ไม่ได้
+            // หมายเหตุ: เคยลองใส่ responseSchema (ARRAY of OBJECT) เพิ่มเข้าไปด้วย แต่พบว่าโมเดลจะหยุด
+            // สร้างรายการหลังจากได้แค่ 1 รายการแรกทุกครั้ง (เพราะ schema ไม่ได้กำหนด minItems ไว้ อาเรย์ 1
+            // รายการก็ถือว่า "valid" ตาม schema แล้ว โมเดลเลยหยุดเร็วกว่าที่ควร) จึงตัด responseSchema ออก
+            // เหลือแค่บังคับ mime type เป็น JSON พอ ให้พรอมต์ (ข้างล่าง) เป็นตัวกำหนดว่าต้องดึงให้ครบทุกแถว
+            responseMimeType: "application/json"
           }
         })
       });
@@ -563,32 +582,67 @@
       }
 
       const data = await res.json();
-      const parts = data?.candidates?.[0]?.content?.parts || [];
-      const textBlock = parts.find((p) => typeof p.text === "string" && p.text.trim());
-      if (!textBlock || !textBlock.text) {
+      const candidate = data?.candidates?.[0];
+      const parts = candidate?.content?.parts || [];
+      // ตัด part ที่เป็น "thought" (ความคิดระหว่างประมวลผล) ออก เอาเฉพาะข้อความคำตอบจริง
+      const textParts = parts.filter((p) => typeof p.text === "string" && p.text.trim() && !p.thought);
+      const raw0 = textParts.map((p) => p.text).join("\n").trim();
+
+      if (!raw0) {
+        const finishReason = candidate?.finishReason;
+        if (finishReason === "MAX_TOKENS") {
+          throw new Error("Gemini ตอบไม่ครบเพราะยาวเกินไป ลองใช้รูปที่มีรายการน้อยลงหรือครอปเฉพาะส่วนที่ต้องการ");
+        }
         throw new Error("ไม่ได้รับข้อความตอบกลับจาก Gemini");
       }
 
-      let raw = textBlock.text.trim();
-      raw = raw.replace(/^```(?:json)?/i, "").replace(/```$/i, "").trim();
+      let raw = raw0.replace(/^```(?:json)?/i, "").replace(/```$/i, "").trim();
+      const rawSnippet = raw.length > 300 ? `${raw.slice(0, 300)}…` : raw;
 
       let parsed;
       try {
         parsed = JSON.parse(raw);
       } catch (e) {
-        throw new Error("ไม่สามารถแปลงผลลัพธ์เป็น JSON ได้ ลองใช้รูปที่ชัดเจนขึ้น");
+        // เผื่อ Gemini แถมข้อความอื่นมาด้วยนอกเหนือจาก JSON array ให้ลองตัดเอาเฉพาะช่วง [ ... ] ออกมา
+        const start = raw.indexOf("[");
+        const end = raw.lastIndexOf("]");
+        if (start >= 0 && end > start) {
+          try {
+            parsed = JSON.parse(raw.slice(start, end + 1));
+          } catch (e2) {
+            throw new Error(`ไม่สามารถแปลงผลลัพธ์เป็น JSON ได้ (${e2.message}) — สิ่งที่ Gemini ตอบกลับมา: "${rawSnippet}"`);
+          }
+        } else {
+          throw new Error(`ไม่สามารถแปลงผลลัพธ์เป็น JSON ได้ — สิ่งที่ Gemini ตอบกลับมา: "${rawSnippet}"`);
+        }
       }
       if (!Array.isArray(parsed)) {
         throw new Error("รูปแบบข้อมูลที่ได้ไม่ถูกต้อง");
       }
 
-      return parsed
+      const todayStr = new Date().toISOString().slice(0, 10);
+      const rows = parsed
         .map((r) => ({
           symbol: String(r.symbol || "").toUpperCase().trim(),
-          shares: parseFloat(r.shares),
-          avgCost: r.avgCost === null || r.avgCost === undefined || r.avgCost === "" ? null : parseFloat(r.avgCost)
+          action: String(r.action || "BUY").toUpperCase().trim() === "SELL" ? "SELL" : "BUY",
+          shares: r.shares === null || r.shares === undefined || r.shares === "" ? null : parseFloat(r.shares),
+          price: r.price === null || r.price === undefined || r.price === "" ? null : parseFloat(r.price),
+          amount: r.amount === null || r.amount === undefined || r.amount === "" ? null : Math.abs(parseFloat(r.amount)),
+          date: (typeof r.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(r.date.trim())) ? r.date.trim() : todayStr
         }))
-        .filter((r) => r.symbol && Number.isFinite(r.shares) && r.shares > 0);
+        .map((r) => ({
+          ...r,
+          shares: Number.isFinite(r.shares) && r.shares > 0 ? r.shares : null,
+          price: Number.isFinite(r.price) && r.price > 0 ? r.price : null,
+          amount: Number.isFinite(r.amount) && r.amount > 0 ? r.amount : null
+        }))
+        .filter((r) => r.symbol);
+
+      // finishReason "MAX_TOKENS" ที่นี่หมายความว่า Gemini ถูกตัดจบก่อนอ่านครบทุกแถวในภาพ
+      // (structured output จะปิด JSON array ให้ถูกไวยากรณ์เสมอ ต่อให้ถูกตัดจบ จึง parse ผ่านได้
+      // ทั้งที่ข้อมูลไม่ครบ — ต้องเช็ค finishReason แยกต่างหากถึงจะรู้)
+      const truncated = candidate?.finishReason === "MAX_TOKENS";
+      return { rows, truncated };
     }
 
     function symbolCacheKey(symbol) {
@@ -1742,11 +1796,6 @@
       const [newPortName, setNewPortName] = useState("");
       const [showNewPortInput, setShowNewPortInput] = useState(false);
 
-      const [actionType, setActionType] = useState("BUY");
-      const [symbol, setSymbol] = useState("");
-      const [shares, setShares] = useState("");
-      const [costPrice, setCostPrice] = useState("");
-      const [targetPctInput, setTargetPctInput] = useState("");
       const [loadingQuotes, setLoadingQuotes] = useState(false);
 
       const [showImportModal, setShowImportModal] = useState(false);
@@ -1759,6 +1808,11 @@
       const [sortField, setSortField] = useState("currVal");
       const [sortAsc, setSortAsc] = useState(false);
       const [expandedSymbol, setExpandedSymbol] = useState(null);
+
+      // เงินสด (Cash) — เป็นก้อนเดียวรวมกันทั้งหมด แยกจากทุกพอร์ต ไม่ผูกกับ portfolio ใดพอร์ตหนึ่ง
+      const [cashAmount, setCashAmount] = useState(0);
+      const [cashAmountInput, setCashAmountInput] = useState("0");
+      const [cashIncluded, setCashIncluded] = useState(false);
 
       useEffect(() => {
         (async () => {
@@ -1778,12 +1832,35 @@
           if (ports.length > 0) {
             setActivePortId(ports[0].id);
           }
+
+          const savedCash = await loadStore("us-dash-cash-v1", { amount: 0, included: false });
+          const amt = Number(savedCash?.amount);
+          setCashAmount(Number.isFinite(amt) ? amt : 0);
+          setCashAmountInput(Number.isFinite(amt) ? String(amt) : "0");
+          setCashIncluded(!!savedCash?.included);
         })();
       }, []);
 
       const savePortfolios = (updated) => {
         setPortfolios(updated);
         saveStore("us-dash-portfolios-v3", updated);
+      };
+
+      const saveCash = (amount, included) => {
+        setCashAmount(amount);
+        setCashIncluded(included);
+        saveStore("us-dash-cash-v1", { amount, included });
+      };
+
+      const handleCashAmountCommit = () => {
+        const val = parseFloat(cashAmountInput);
+        const amount = Number.isFinite(val) ? val : 0;
+        setCashAmountInput(String(amount));
+        saveCash(amount, cashIncluded);
+      };
+
+      const toggleCashIncluded = () => {
+        saveCash(cashAmount, !cashIncluded);
       };
 
       const activePort = useMemo(() => {
@@ -1846,9 +1923,13 @@
           setImportPreview(dataUrl);
 
           try {
-            const rows = await extractPortfolioFromImage(base64Data, mediaType, geminiKey.trim());
+            const { rows, truncated } = await extractPortfolioFromImage(base64Data, mediaType, geminiKey.trim());
             if (rows.length === 0) {
-              setImportError("ไม่พบรายการหุ้นในภาพนี้ ลองใช้ภาพที่เห็นชื่อหุ้น จำนวนหุ้น และต้นทุนชัดเจนกว่านี้");
+              setImportError("ไม่พบรายการซื้อขายหุ้นในภาพนี้ ลองใช้ภาพที่เห็นชื่อหุ้นและระบุได้ว่าเป็นการซื้อหรือขายชัดเจนกว่านี้");
+            } else if (truncated) {
+              setImportError(
+                `อ่านได้ ${rows.length} รายการ แต่ AI อาจตัดจบก่อนอ่านครบทุกแถวในภาพ (ข้อความยาวเกินไป) — ตรวจสอบด้านล่างว่าครบตามภาพหรือไม่ ถ้าไม่ครบลองครอปภาพให้เหลือรายการน้อยลงแล้วอัปโหลดเพิ่มเติมทีหลัง`
+              );
             }
             setImportRows(rows.map((r) => ({ ...r, include: true })));
           } catch (err) {
@@ -1865,7 +1946,21 @@
       };
 
       const updateImportRow = (idx, patch) => {
-        setImportRows((prev) => prev.map((r, i) => (i === idx ? { ...r, ...patch } : r)));
+        setImportRows((prev) => prev.map((r, i) => {
+          if (i !== idx) return r;
+          const merged = { ...r, ...patch };
+          // ถ้ามียอดรวมของรายการ (amount) อยู่แล้ว และผู้ใช้เพิ่งกรอก/แก้จำนวนหุ้น แต่ยังไม่มีราคาต่อหุ้น
+          // ให้คำนวณราคาต่อหุ้นให้อัตโนมัติจาก amount / shares
+          if (
+            "shares" in patch &&
+            Number.isFinite(merged.amount) && merged.amount > 0 &&
+            Number.isFinite(merged.shares) && merged.shares > 0 &&
+            (merged.price === null || merged.price === undefined || Number.isNaN(merged.price))
+          ) {
+            merged.price = Math.round((merged.amount / merged.shares) * 10000) / 10000;
+          }
+          return merged;
+        }));
       };
 
       const removeImportRow = (idx) => {
@@ -1873,35 +1968,81 @@
       };
 
       const confirmImportRows = () => {
-        const toAdd = importRows.filter(
-          (r) => r.include && r.symbol && Number.isFinite(r.shares) && r.shares > 0 && Number.isFinite(r.avgCost) && r.avgCost > 0
+        const missingShares = importRows.filter((r) => r.include && r.symbol && !(Number.isFinite(r.shares) && r.shares > 0));
+        const toApply = importRows.filter(
+          (r) => r.include && r.symbol && Number.isFinite(r.shares) && r.shares > 0
         );
-        if (toAdd.length === 0) {
-          alert("ไม่มีรายการที่พร้อมนำเข้า กรุณาตรวจสอบว่าทุกแถวมี Symbol, จำนวนหุ้น และต้นทุนต่อหุ้นครบถ้วน");
+        if (toApply.length === 0) {
+          alert("ไม่มีรายการที่พร้อมนำเข้า กรุณากรอกจำนวนหุ้นให้ครบทุกแถวก่อนยืนยัน");
           return;
         }
+        if (missingShares.length > 0) {
+          const proceed = confirm(
+            `มี ${missingShares.length} รายการ (${missingShares.map((r) => r.symbol).join(", ")}) ที่ยังไม่ได้กรอกจำนวนหุ้น จะถูกข้ามไปก่อน ต้องการยืนยันเฉพาะรายการที่กรอกครบแล้วหรือไม่?`
+          );
+          if (!proceed) return;
+        }
 
+        const skippedSells = [];
         let updated = [...portfolio];
-        toAdd.forEach((row) => {
+
+        toApply.forEach((row) => {
           const s = row.symbol.toUpperCase().trim();
           const numShares = row.shares;
-          const price = row.avgCost;
+          const price = Number.isFinite(row.price) ? row.price : null;
+          const txDate = row.date || new Date().toISOString().slice(0, 10);
           const existingIndex = updated.findIndex((item) => item.symbol === s);
 
-          if (existingIndex >= 0) {
+          if (row.action === "SELL") {
+            // ตัดขาย/Trim หุ้นที่มีอยู่แล้วในพอร์ตโดยอัตโนมัติ
+            if (existingIndex < 0) {
+              skippedSells.push(s);
+              return;
+            }
             const existing = updated[existingIndex];
-            const oldTotalCost = existing.shares * existing.avgCost;
-            const newBuyCost = numShares * price;
-            const newTotalShares = existing.shares + numShares;
-            const newAvgCost = (oldTotalCost + newBuyCost) / newTotalShares;
-            updated[existingIndex] = { ...existing, shares: newTotalShares, avgCost: newAvgCost };
+            const sellShares = Math.min(numShares, existing.shares);
+            if (Math.abs(sellShares - existing.shares) < 1e-6) {
+              updated.splice(existingIndex, 1);
+            } else {
+              updated[existingIndex] = {
+                ...existing,
+                shares: existing.shares - sellShares,
+                lastTxDate: txDate
+              };
+            }
           } else {
-            updated.push({ symbol: s, shares: numShares, avgCost: price, targetPct: 0 });
+            // ซื้อเพิ่ม/เพิ่มหุ้นใหม่เข้าพอร์ตโดยอัตโนมัติ
+            if (existingIndex >= 0) {
+              const existing = updated[existingIndex];
+              const buyPrice = price != null ? price : existing.avgCost;
+              const oldTotalCost = existing.shares * existing.avgCost;
+              const newBuyCost = numShares * buyPrice;
+              const newTotalShares = existing.shares + numShares;
+              const newAvgCost = (oldTotalCost + newBuyCost) / newTotalShares;
+              updated[existingIndex] = {
+                ...existing,
+                shares: newTotalShares,
+                avgCost: newAvgCost,
+                lastTxDate: txDate
+              };
+            } else {
+              updated.push({
+                symbol: s,
+                shares: numShares,
+                avgCost: price != null ? price : 0,
+                targetPct: 0,
+                lastTxDate: txDate
+              });
+            }
           }
         });
 
         updateActiveItems(updated);
-        if (tdKey) toAdd.forEach((row) => loadSymbol(row.symbol.toUpperCase().trim(), false));
+        if (tdKey) toApply.forEach((row) => loadSymbol(row.symbol.toUpperCase().trim(), false));
+
+        if (skippedSells.length > 0) {
+          alert(`ข้ามรายการขายของ ${skippedSells.join(", ")} เนื่องจากไม่พบหุ้นนี้ในพอร์ต "${activePort.name}"`);
+        }
 
         closeImportModal();
       };
@@ -1954,80 +2095,6 @@
         }
       }, [portfolios.length, tdKey]);
 
-      const handleTransaction = (e) => {
-        e.preventDefault();
-        const s = symbol.trim().toUpperCase();
-        const numShares = parseFloat(shares);
-        const price = parseFloat(costPrice);
-        const targetPct = parseFloat(targetPctInput);
-
-        if (!s || isNaN(numShares) || numShares <= 0) {
-          alert("กรุณากรอก Symbol และจำนวนหุ้นให้ถูกต้อง");
-          return;
-        }
-
-        const existingIndex = portfolio.findIndex((item) => item.symbol === s);
-
-        if (actionType === "BUY") {
-          if (isNaN(price) || price <= 0) {
-            alert("กรุณากรอกราคาต้นทุนซื้อให้ถูกต้อง");
-            return;
-          }
-
-          let updated = [...portfolio];
-          if (existingIndex >= 0) {
-            const existing = updated[existingIndex];
-            const oldTotalCost = existing.shares * existing.avgCost;
-            const newBuyCost = numShares * price;
-            const newTotalShares = existing.shares + numShares;
-            const newAvgCost = (oldTotalCost + newBuyCost) / newTotalShares;
-
-            updated[existingIndex] = {
-              ...existing,
-              shares: newTotalShares,
-              avgCost: newAvgCost,
-              targetPct: !isNaN(targetPct) && targetPct >= 0 ? targetPct : (existing.targetPct || 0)
-            };
-          } else {
-            updated.push({
-              symbol: s,
-              shares: numShares,
-              avgCost: price,
-              targetPct: !isNaN(targetPct) && targetPct >= 0 ? targetPct : 0
-            });
-          }
-          updateActiveItems(updated);
-          if (tdKey) loadSymbol(s, false);
-
-        } else if (actionType === "TRIM") {
-          if (existingIndex < 0) {
-            alert(`ไม่พบหุ้น ${s} ในพอร์ต "${activePort.name}"`);
-            return;
-          }
-          const existing = portfolio[existingIndex];
-          if (numShares > existing.shares) {
-            alert(`จำนวนหุ้นที่ต้องการขาย (${numShares}) มากกว่าหุ้นที่มีอยู่ (${existing.shares})`);
-            return;
-          }
-
-          let updated = [...portfolio];
-          if (Math.abs(numShares - existing.shares) < 1e-6) {
-            updated.splice(existingIndex, 1);
-          } else {
-            updated[existingIndex] = {
-              ...existing,
-              shares: existing.shares - numShares
-            };
-          }
-          updateActiveItems(updated);
-        }
-
-        setSymbol("");
-        setShares("");
-        setCostPrice("");
-        setTargetPctInput("");
-      };
-
       const updateTargetPct = (sym, newPct) => {
         const val = parseFloat(newPct);
         const updated = portfolio.map((item) => {
@@ -2046,19 +2113,6 @@
         }
       };
 
-      const quickAction = (sym, type) => {
-        setSymbol(sym);
-        setActionType(type);
-        const existing = portfolio.find((p) => p.symbol === sym);
-        if (existing && existing.targetPct != null) {
-          setTargetPctInput(existing.targetPct.toString());
-        }
-        if (type === "BUY") {
-          const currQuote = dataMap[sym]?.quote?.close;
-          if (currQuote) setCostPrice(currQuote.toString());
-        }
-      };
-
       const totalPortfolioVal = useMemo(() => {
         return portfolio.reduce((acc, item) => {
           const quote = dataMap[item.symbol]?.quote;
@@ -2067,6 +2121,22 @@
           return acc + currVal;
         }, 0);
       }, [portfolio, dataMap]);
+
+      // มูลค่ารวมทุกพอร์ต (ทุกพอร์ตทั้งหมด ไม่ใช่แค่พอร์ตที่กำลังเปิดดู) — ใช้เป็นฐานสำหรับรวมเงินสด
+      const totalAllPortfoliosVal = useMemo(() => {
+        return portfolios.reduce((acc, p) => {
+          const items = p.items || [];
+          const val = items.reduce((iAcc, item) => {
+            const quote = dataMap[item.symbol]?.quote;
+            const currPrice = quote?.close ? parseFloat(quote.close) : null;
+            const currVal = currPrice != null ? item.shares * currPrice : item.shares * item.avgCost;
+            return iAcc + currVal;
+          }, 0);
+          return acc + val;
+        }, 0);
+      }, [portfolios, dataMap]);
+
+      const grandTotalWithCash = totalAllPortfoliosVal + (cashIncluded ? cashAmount : 0);
 
       const processedPortfolio = useMemo(() => {
         return portfolio.map((item) => {
@@ -2214,6 +2284,55 @@
             </div>
           </div>
 
+          <div className="bg-zinc-900 border border-emerald-500/20 rounded-lg p-3 flex flex-wrap items-center gap-4">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-xs font-semibold text-zinc-300 flex items-center gap-1.5">
+                <span>💵</span> เงินสด (รวมทุกพอร์ต):
+              </span>
+              <input
+                type="number"
+                step="any"
+                value={cashAmountInput}
+                onChange={(e) => setCashAmountInput(e.target.value)}
+                onBlur={handleCashAmountCommit}
+                placeholder="0"
+                className="w-32 bg-zinc-950 border border-zinc-800 rounded px-2.5 py-1 text-xs font-mono text-emerald-300"
+              />
+              <button
+                onClick={handleCashAmountCommit}
+                className="px-2.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-xs text-zinc-300 transition"
+              >
+                บันทึก
+              </button>
+              <span className="text-[10px] text-zinc-500">
+                เงินสดเป็นก้อนเดียวรวมกันของทุกพอร์ต ไม่ได้แยกตามพอร์ตใดพอร์ตหนึ่ง
+              </span>
+            </div>
+
+            <div className="flex items-center gap-2 ml-auto">
+              <span className="text-[11px] text-zinc-400">รวมเงินสดกับมูลค่าพอร์ตทั้งหมด:</span>
+              <button
+                onClick={toggleCashIncluded}
+                className={`relative w-11 h-6 rounded-full transition-colors shrink-0 ${cashIncluded ? "bg-emerald-500" : "bg-zinc-700"}`}
+                title={cashIncluded ? "ปิดการรวมเงินสด" : "เปิดการรวมเงินสด"}
+              >
+                <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white transition-transform ${cashIncluded ? "translate-x-5" : ""}`} />
+              </button>
+              <span className={`text-xs font-medium ${cashIncluded ? "text-emerald-400" : "text-zinc-500"}`}>
+                {cashIncluded ? "เปิด" : "ปิด"}
+              </span>
+            </div>
+
+            <div className="text-right">
+              <div className="text-[11px] text-zinc-500">
+                มูลค่ารวมทั้งหมด (ทุกพอร์ต{cashIncluded ? " + เงินสด" : ""})
+              </div>
+              <div className="text-base font-mono font-bold text-blue-300">
+                ${fmtPrice(grandTotalWithCash)}
+              </div>
+            </div>
+          </div>
+
           <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-4">
             <div className="text-sm font-semibold text-zinc-100 flex items-center justify-between mb-3">
               <span className="flex items-center gap-2">
@@ -2224,10 +2343,10 @@
                 <button
                   onClick={handleImportButtonClick}
                   className="flex items-center gap-1.5 text-xs text-purple-400 hover:text-purple-300"
-                  title="อัปโหลดรูปพอร์ตให้ AI อ่านข้อมูลแล้วเพิ่มหุ้นให้อัตโนมัติ"
+                  title="อัปโหลดรูปการทำรายการให้ AI อ่านและบันทึกซื้อ/ขายให้อัตโนมัติ"
                 >
                   <ImageIcon size={13} />
-                  อัปโหลดรูปพอร์ต (AI อ่านอัตโนมัติ)
+                  อัปโหลดรูปทำรายการ (AI อ่านอัตโนมัติ)
                 </button>
                 <button
                   onClick={refreshPortfolioQuotes}
@@ -2248,85 +2367,10 @@
               onChange={handleImportFileChange}
             />
 
-            <form onSubmit={handleTransaction} className="space-y-3">
-              <div className="flex items-center gap-2 mb-2">
-                <button
-                  type="button"
-                  onClick={() => setActionType("BUY")}
-                  className={`px-3 py-1 text-xs rounded font-medium border ${actionType === "BUY" ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/50" : "bg-zinc-950 text-zinc-400 border-zinc-800"}`}
-                >
-                  <Plus size={12} className="inline mr-1" /> ซื้อเพิ่ม / บันทึกหุ้น (Buy)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setActionType("TRIM")}
-                  className={`px-3 py-1 text-xs rounded font-medium border ${actionType === "TRIM" ? "bg-amber-500/20 text-amber-300 border-amber-500/50" : "bg-zinc-950 text-zinc-400 border-zinc-800"}`}
-                >
-                  <MinusCircle size={12} className="inline mr-1" /> ขายบางส่วน (Trim/Sell)
-                </button>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-5 gap-3 items-end">
-                <div>
-                  <label className="text-[11px] text-zinc-400 block mb-1">ชื่อหุ้น (Symbol)</label>
-                  <input
-                    type="text"
-                    placeholder="เช่น NVDA"
-                    value={symbol}
-                    onChange={(e) => setSymbol(e.target.value)}
-                    className="w-full bg-zinc-950 border border-zinc-800 rounded px-3 py-1.5 text-xs font-mono text-zinc-100 uppercase"
-                  />
-                </div>
-                <div>
-                  <label className="text-[11px] text-zinc-400 block mb-1">
-                    {actionType === "BUY" ? "จำนวนหุ้นซื้อเพิ่ม" : "จำนวนหุ้นขาย"}
-                  </label>
-                  <input
-                    type="number"
-                    step="any"
-                    placeholder="เช่น 10 หรือ 0.52"
-                    value={shares}
-                    onChange={(e) => setShares(e.target.value)}
-                    className="w-full bg-zinc-950 border border-zinc-800 rounded px-3 py-1.5 text-xs font-mono text-zinc-100"
-                  />
-                </div>
-                {actionType === "BUY" && (
-                  <>
-                    <div>
-                      <label className="text-[11px] text-zinc-400 block mb-1">ราคาซื้อต่อหุ้น ($)</label>
-                      <input
-                        type="number"
-                        step="any"
-                        placeholder="เช่น 120.50"
-                        value={costPrice}
-                        onChange={(e) => setCostPrice(e.target.value)}
-                        className="w-full bg-zinc-950 border border-zinc-800 rounded px-3 py-1.5 text-xs font-mono text-zinc-100"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[11px] text-zinc-400 block mb-1">ล็อกสัดส่วนเป้าหมาย (% พอร์ตนี้)</label>
-                      <input
-                        type="number"
-                        step="any"
-                        placeholder="เช่น 50"
-                        value={targetPctInput}
-                        onChange={(e) => setTargetPctInput(e.target.value)}
-                        className="w-full bg-zinc-950 border border-zinc-800 rounded px-3 py-1.5 text-xs font-mono text-blue-400 font-bold"
-                      />
-                    </div>
-                  </>
-                )}
-                <div className={actionType === "TRIM" ? "sm:col-span-3" : ""}>
-                  <button
-                    type="submit"
-                    className={`w-full flex items-center justify-center gap-1.5 px-4 py-1.5 rounded font-medium text-xs text-white transition ${actionType === "BUY" ? "bg-emerald-600 hover:bg-emerald-500" : "bg-amber-600 hover:bg-amber-500"}`}
-                  >
-                    {actionType === "BUY" ? <Plus size={14} /> : <MinusCircle size={14} />}
-                    {actionType === "BUY" ? `เพิ่มเข้าพอร์ต ${activePort.name}` : "ตัดขาย (Trim)"}
-                  </button>
-                </div>
-              </div>
-            </form>
+            <div className="text-[11px] text-zinc-500 flex items-center gap-1.5">
+              <ImageIcon size={13} className="text-purple-400 shrink-0" />
+              การซื้อ/ขายหุ้นทุกครั้งในพอร์ตนี้ทำผ่านการอัปโหลดรูปการทำรายการเท่านั้น — ให้ AI อ่านภาพแล้ววิเคราะห์เองว่าเป็นการซื้อหรือขาย, เป็นหุ้นตัวใหม่หรือเพิ่ม/ตัดขายหุ้นที่มีอยู่แล้ว โดยตรวจสอบและแก้ไขข้อมูลได้ก่อนยืนยัน
+            </div>
           </div>
 
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -2405,7 +2449,7 @@
 
             {portfolio.length === 0 ? (
               <div className="text-center text-zinc-500 py-8 text-xs">
-                ยังไม่มีรายการหุ้นในพอร์ต "{activePort.name}" กรอกข้อมูลด้านบนเพื่อเริ่มบันทึกหุ้นเข้าพอร์ตนี้
+                ยังไม่มีรายการหุ้นในพอร์ต "{activePort.name}" อัปโหลดรูปการทำรายการด้านบนเพื่อเริ่มบันทึกหุ้นเข้าพอร์ตนี้
               </div>
             ) : (
               <table className="w-full text-left text-xs font-mono">
@@ -2524,18 +2568,9 @@
                             </div>
 
                             <div className="flex items-center gap-2 pt-1 border-t border-zinc-800">
-                              <button
-                                onClick={() => quickAction(item.symbol, "BUY")}
-                                className="px-2.5 py-1 rounded bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 text-[11px] font-medium"
-                              >
-                                <Plus size={12} className="inline mr-1" />ซื้อเพิ่ม
-                              </button>
-                              <button
-                                onClick={() => quickAction(item.symbol, "TRIM")}
-                                className="px-2.5 py-1 rounded bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 text-[11px] font-medium"
-                              >
-                                <MinusCircle size={12} className="inline mr-1" />ตัดขาย (Trim)
-                              </button>
+                              <span className="text-[10px] text-zinc-600">
+                                ซื้อเพิ่ม/ตัดขายหุ้นนี้ผ่านการอัปโหลดรูปทำรายการด้านบน
+                              </span>
                               <button
                                 onClick={() => deletePosition(item.symbol)}
                                 className="px-2.5 py-1 rounded hover:bg-zinc-800 text-zinc-500 hover:text-red-400 text-[11px] font-medium ml-auto flex items-center gap-1"
@@ -2564,7 +2599,7 @@
                 <div className="flex items-center justify-between">
                   <div className="text-sm font-semibold text-zinc-100 flex items-center gap-2">
                     <ImageIcon size={16} className="text-purple-400" />
-                    อัปโหลดรูปพอร์ต — ให้ AI อ่านข้อมูลอัตโนมัติ
+                    อัปโหลดรูปทำรายการ — ให้ AI อ่านข้อมูลอัตโนมัติ
                   </div>
                   <button onClick={closeImportModal} className="p-1 rounded hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200">
                     <X size={16} />
@@ -2572,8 +2607,9 @@
                 </div>
 
                 <div className="text-[11px] text-zinc-500">
-                  อัปโหลดภาพหน้าจอพอร์ตหุ้น (เช่น จากแอปโบรกเกอร์) ระบบจะส่งภาพไปให้ Gemini อ่านชื่อหุ้น จำนวนหุ้น
-                  และต้นทุนเฉลี่ยให้อัตโนมัติ — ตรวจสอบความถูกต้องก่อนกดยืนยันเพิ่มเข้าพอร์ตเสมอ
+                  อัปโหลดภาพการทำรายการซื้อ/ขายหุ้น (เช่น สลิปยืนยันคำสั่งซื้อขาย ประวัติการทำรายการ หรือภาพรวมพอร์ตจากแอปโบรกเกอร์)
+                  ระบบจะส่งภาพไปให้ AI วิเคราะห์เองว่ามีการซื้อหรือขายอะไร เป็นหุ้นตัวใหม่หรือซื้อเพิ่ม/ตัดขายหุ้นที่มีอยู่แล้ว
+                  พร้อมจำนวนหุ้น ราคา และวันที่ — ตรวจสอบและแก้ไขข้อมูลให้ถูกต้องก่อนกดยืนยันเสมอ
                 </div>
 
                 {!importPreview && (
@@ -2582,13 +2618,13 @@
                     className="w-full border-2 border-dashed border-zinc-700 hover:border-purple-500/60 rounded-lg py-8 flex flex-col items-center gap-2 text-zinc-500 hover:text-purple-400 transition text-xs"
                   >
                     <Upload size={22} />
-                    คลิกเพื่อเลือกรูปภาพพอร์ต
+                    คลิกเพื่อเลือกรูปภาพการทำรายการ
                   </button>
                 )}
 
                 {importPreview && (
                   <div className="rounded-lg overflow-hidden border border-zinc-800 max-h-56">
-                    <img src={importPreview} alt="portfolio screenshot" className="w-full h-full object-contain bg-zinc-950" />
+                    <img src={importPreview} alt="transaction screenshot" className="w-full h-full object-contain bg-zinc-950" />
                   </div>
                 )}
 
@@ -2617,21 +2653,25 @@
                   <div className="space-y-2">
                     <div className="text-xs font-semibold text-zinc-300 flex items-center gap-1.5">
                       <CheckSquare size={13} className="text-emerald-400" />
-                      ตรวจสอบและแก้ไขข้อมูลก่อนเพิ่มเข้าพอร์ต "{activePort.name}"
+                      ตรวจสอบและแก้ไขข้อมูลก่อนบันทึกเข้าพอร์ต "{activePort.name}"
                     </div>
                     <div className="overflow-x-auto">
                       <table className="w-full text-left text-[11px] font-mono">
                         <thead>
                           <tr className="border-b border-zinc-800 text-zinc-500">
                             <th className="pb-1.5 pr-2"></th>
+                            <th className="pb-1.5 pr-2">ประเภท</th>
                             <th className="pb-1.5 pr-2">Symbol</th>
                             <th className="pb-1.5 pr-2 text-right">จำนวนหุ้น</th>
-                            <th className="pb-1.5 pr-2 text-right">ต้นทุน/หุ้น ($)</th>
+                            <th className="pb-1.5 pr-2 text-right">ราคา/หุ้น ($)</th>
+                            <th className="pb-1.5 pr-2">วันที่ทำรายการ</th>
                             <th className="pb-1.5"></th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-zinc-800/60">
-                          {importRows.map((row, idx) => (
+                          {importRows.map((row, idx) => {
+                            const existsInPortfolio = portfolio.some((p) => p.symbol === row.symbol.toUpperCase().trim());
+                            return (
                             <tr key={idx}>
                               <td className="py-1.5 pr-2">
                                 <input
@@ -2639,6 +2679,29 @@
                                   checked={row.include}
                                   onChange={(e) => updateImportRow(idx, { include: e.target.checked })}
                                 />
+                              </td>
+                              <td className="py-1.5 pr-2">
+                                <div className="flex items-center gap-1">
+                                  <button
+                                    type="button"
+                                    onClick={() => updateImportRow(idx, { action: "BUY" })}
+                                    className={`px-1.5 py-0.5 rounded text-[10px] font-bold border ${row.action === "BUY" ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/50" : "bg-zinc-950 text-zinc-500 border-zinc-800"}`}
+                                  >
+                                    BUY
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => updateImportRow(idx, { action: "SELL" })}
+                                    className={`px-1.5 py-0.5 rounded text-[10px] font-bold border ${row.action === "SELL" ? "bg-amber-500/20 text-amber-300 border-amber-500/50" : "bg-zinc-950 text-zinc-500 border-zinc-800"}`}
+                                  >
+                                    SELL
+                                  </button>
+                                </div>
+                                <div className="text-[9px] text-zinc-600 mt-0.5">
+                                  {existsInPortfolio
+                                    ? (row.action === "SELL" ? "ตัดขายของเดิม" : "ซื้อเพิ่มของเดิม")
+                                    : (row.action === "SELL" ? "ไม่พบในพอร์ต" : "หุ้นตัวใหม่")}
+                                </div>
                               </td>
                               <td className="py-1.5 pr-2">
                                 <input
@@ -2650,21 +2713,56 @@
                               </td>
                               <td className="py-1.5 pr-2 text-right">
                                 <input
-                                  type="number"
-                                  step="any"
-                                  value={Number.isFinite(row.shares) ? row.shares : ""}
-                                  onChange={(e) => updateImportRow(idx, { shares: parseFloat(e.target.value) })}
-                                  className="w-20 bg-zinc-950 border border-zinc-800 rounded px-1.5 py-1 text-right text-zinc-100 font-mono"
+                                  type="text"
+                                  inputMode="decimal"
+                                  value={row.shares === null || row.shares === undefined ? "" : row.shares}
+                                  onChange={(e) => {
+                                    const v = e.target.value;
+                                    if (v === "" || /^\d*\.?\d*$/.test(v)) {
+                                      updateImportRow(idx, { shares: v === "" ? null : v });
+                                    }
+                                  }}
+                                  onBlur={(e) => {
+                                    const n = parseFloat(e.target.value);
+                                    updateImportRow(idx, { shares: Number.isFinite(n) && n > 0 ? n : null });
+                                  }}
+                                  placeholder="กรอกจำนวนหุ้น"
+                                  className={`w-24 bg-zinc-950 border rounded px-1.5 py-1 text-right text-zinc-100 font-mono ${
+                                    row.shares === null || row.shares === undefined || row.shares === "" ? "border-amber-500/60" : "border-zinc-800"
+                                  }`}
                                 />
+                                {(row.shares === null || row.shares === undefined || row.shares === "") && (
+                                  <div className="text-[9px] text-amber-500 mt-0.5">ไม่พบในภาพ — กรอกเอง</div>
+                                )}
                               </td>
                               <td className="py-1.5 pr-2 text-right">
                                 <input
-                                  type="number"
-                                  step="any"
-                                  value={row.avgCost === null || row.avgCost === undefined || Number.isNaN(row.avgCost) ? "" : row.avgCost}
-                                  onChange={(e) => updateImportRow(idx, { avgCost: parseFloat(e.target.value) })}
+                                  type="text"
+                                  inputMode="decimal"
+                                  value={row.price === null || row.price === undefined ? "" : row.price}
+                                  onChange={(e) => {
+                                    const v = e.target.value;
+                                    if (v === "" || /^\d*\.?\d*$/.test(v)) {
+                                      updateImportRow(idx, { price: v === "" ? null : v });
+                                    }
+                                  }}
+                                  onBlur={(e) => {
+                                    const n = parseFloat(e.target.value);
+                                    updateImportRow(idx, { price: Number.isFinite(n) && n > 0 ? n : null });
+                                  }}
                                   className="w-24 bg-zinc-950 border border-zinc-800 rounded px-1.5 py-1 text-right text-zinc-100 font-mono"
-                                  placeholder={row.avgCost === null ? "ไม่พบ — กรอกเอง" : ""}
+                                  placeholder={row.price === null || row.price === undefined || row.price === "" ? "ไม่พบ — กรอกเอง" : ""}
+                                />
+                                {Number.isFinite(row.amount) && (
+                                  <div className="text-[9px] text-zinc-600 mt-0.5">ยอดรวม ${fmtPrice(row.amount)}</div>
+                                )}
+                              </td>
+                              <td className="py-1.5 pr-2">
+                                <input
+                                  type="date"
+                                  value={row.date || ""}
+                                  onChange={(e) => updateImportRow(idx, { date: e.target.value })}
+                                  className="w-32 bg-zinc-950 border border-zinc-800 rounded px-1.5 py-1 text-zinc-100 font-mono"
                                 />
                               </td>
                               <td className="py-1.5 text-center">
@@ -2677,12 +2775,14 @@
                                 </button>
                               </td>
                             </tr>
-                          ))}
+                            );
+                          })}
                         </tbody>
                       </table>
                     </div>
                     <div className="text-[10px] text-zinc-500">
-                      รายการที่ Symbol ตรงกับหุ้นที่มีอยู่แล้วในพอร์ตนี้จะถูกนำมาคำนวณต้นทุนเฉลี่ยใหม่รวมกับของเดิมโดยอัตโนมัติ
+                      AI จะพยายามระบุประเภทรายการ (ซื้อ/ขาย) ให้อัตโนมัติ — ตรวจสอบและแก้ไขได้ก่อนยืนยัน รายการ BUY ที่ Symbol ตรงกับหุ้นเดิมจะถูกคำนวณต้นทุนเฉลี่ยใหม่ให้อัตโนมัติ ส่วนรายการ SELL จะตัดจำนวนหุ้นออกจากของเดิม (หากขายหมดจะลบออกจากพอร์ต)
+                      หากภาพไม่มีคอลัมน์จำนวนหุ้น (เช่น ตารางประวัติรายการที่มีแต่ยอดเงินรวม) ระบบจะขึ้นเตือนสีเหลืองให้กรอกจำนวนหุ้นเอง และจะคำนวณราคาต่อหุ้นจากยอดรวมให้อัตโนมัติเมื่อกรอกจำนวนหุ้นแล้ว
                     </div>
                   </div>
                 )}
@@ -2699,7 +2799,7 @@
                     disabled={importRows.length === 0 || importLoading}
                     className="flex items-center gap-1.5 px-4 py-1.5 rounded bg-purple-600 hover:bg-purple-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-medium"
                   >
-                    <Plus size={13} /> เพิ่มเข้าพอร์ต "{activePort.name}"
+                    <Plus size={13} /> ยืนยันบันทึกรายการเข้าพอร์ต "{activePort.name}"
                   </button>
                 </div>
               </div>
@@ -3586,208 +3686,6 @@
     }
 
     /* ============================================================
-       SCREENER — AUTOMATED 10x-100x S-CURVE ALGORITHM
-       ============================================================ */
-    const S_CURVE_RULES = [
-      { key: "s1", label: "1. S-Curve & Runway", desc: "เทรนด์ใหญ่โลกเลี่ยงไม่ได้ + อยู่ต้น S-Curve ลู่วิ่งโต 5-10 ปี" },
-      { key: "s2", label: "2. Scalable Moat", desc: "ยิ่งโตยิ่งต้นทุนถูกลง + คูเมืองปกป้องธุรกิจ (Gross Margin สูง)" },
-      { key: "s3", label: "3. Founder-Driven", desc: "บริหารด้วย Founder DNA กล้าเดิมพัน เน้นการเติบโตเชิงรุก" },
-      { key: "s4", label: "4. Reality & Catalyst", desc: "ลูกค้ายอมจ่ายเงินจริง (รายได้โต) + มี Catalyst เร่งราคา" },
-    ];
-
-    function calculateAutoSCurve(entry) {
-      if (!entry) return null;
-      const { series, fundamentals, profile } = entry;
-      if (!series || series.length < 20) return null;
-
-      const cls = classify(series);
-      
-      const rawRevGrowth = pick(fundamentals, ["revenueGrowthTTMYoy", "revenueGrowth3Y", "revenueGrowthQuarterlyYoy"]);
-      const revGrowthPct = rawRevGrowth == null ? null : (Math.abs(rawRevGrowth) < 3 ? rawRevGrowth * 100 : rawRevGrowth);
-
-      const rawGrossMargin = pick(fundamentals, ["grossMarginTTM", "grossMarginAnnual"]);
-      const grossMarginPct = rawGrossMargin == null ? null : (Math.abs(rawGrossMargin) < 3 ? rawGrossMargin * 100 : rawGrossMargin);
-
-      const mktCap = (pick(fundamentals, ["marketCapitalization"]) || profile?.marketCapitalization || 0) * 1e6;
-      const mktCapB = mktCap / 1e9;
-
-      let s1 = 0;
-      let s1Notes = [];
-      if (revGrowthPct != null) {
-        if (revGrowthPct >= 35) { s1 += 2; s1Notes.push(`รายได้โตจัด ${revGrowthPct.toFixed(1)}% YoY (Finnhub)`); }
-        else if (revGrowthPct >= 15) { s1 += 1; s1Notes.push(`รายได้เติบโตดี ${revGrowthPct.toFixed(1)}% YoY (Finnhub)`); }
-      }
-      if (mktCapB > 0 && mktCapB <= 20) { s1 += 2; s1Notes.push(`Mkt Cap $${mktCapB.toFixed(1)}B (ลู่วิ่งยาว)`); }
-      else if (mktCapB > 20 && mktCapB <= 100) { s1 += 1; s1Notes.push(`Mkt Cap $${mktCapB.toFixed(1)}B (Mid-Cap)`); }
-      if (cls.trend === "Uptrend") { s1 += 1; s1Notes.push("กราฟ Uptrend หนุนเทรนด์ใหญ่ (TD)"); }
-      s1 = Math.min(5, s1);
-
-      let s2 = 0;
-      let s2Notes = [];
-      if (grossMarginPct != null) {
-        if (grossMarginPct >= 65) { s2 += 3; s2Notes.push(`Gross Margin สูงมาก ${grossMarginPct.toFixed(1)}% (Finnhub)`); }
-        else if (grossMarginPct >= 45) { s2 += 2; s2Notes.push(`Gross Margin แข็งแกร่ง ${grossMarginPct.toFixed(1)}% (Finnhub)`); }
-        else if (grossMarginPct >= 25) { s2 += 1; s2Notes.push(`Gross Margin ${grossMarginPct.toFixed(1)}% (Finnhub)`); }
-      } else { s2 += 1; }
-      if (revGrowthPct != null && revGrowthPct > 20 && grossMarginPct > 50) {
-        s2 += 2; s2Notes.push("Scalable Moat (รายได้โตขนาน Margin สูง)");
-      } else if (grossMarginPct > 40) {
-        s2 += 1; s2Notes.push("มี Pricing Power จาก Gross Margin");
-      }
-      s2 = Math.min(5, s2);
-
-      let s3 = 0;
-      let s3Notes = [];
-      if (revGrowthPct != null && revGrowthPct >= 25) { s3 += 2; s3Notes.push("กล้าเดิมพัน R&D/การเติบโตเชิงรุก"); }
-      if (mktCapB > 0 && mktCapB <= 50) { s3 += 2; s3Notes.push("โครงสร้างคล่องตัวสไตล์ Founder"); } else { s3 += 1; }
-      if (cls.momentum === "Strong Bullish" || cls.momentum === "Bullish") {
-        s3 += 1; s3Notes.push("วิสัยทัศน์ผู้บริหารหนุนความเชื่อมั่น (TD)");
-      }
-      s3 = Math.min(5, s3);
-
-      let s4 = 0;
-      let s4Notes = [];
-      if (revGrowthPct != null && revGrowthPct > 0) { s4 += 2; s4Notes.push("มีลูกค้ายอมจ่ายเงินจริง (รายได้เป็นบวก)"); }
-      if (cls.trend === "Uptrend") { s4 += 2; s4Notes.push("มี Catalyst ทางเทคนิค Uptrend (TD)"); }
-      else if (cls.momentum === "Bullish" || cls.momentum === "Strong Bullish") { s4 += 1; s4Notes.push("แรงซื้อโมเมนตัมฟื้นตัว (TD)"); }
-      if (cls.rsi > 50) { s4 += 1; s4Notes.push("RSI > 50 ตลาดเริ่มให้มูลค่า (TD)"); }
-      s4 = Math.min(5, s4);
-
-      const total = s1 + s2 + s3 + s4;
-      return { s1, s2, s3, s4, total, notes: { s1: s1Notes, s2: s2Notes, s3: s3Notes, s4: s4Notes }, revGrowthPct, grossMarginPct, mktCapB };
-    }
-
-    function autoVerdict(total) {
-      if (total >= 16) return { label: "🔥 ตัวเต็ง S-Curve 10x", style: "text-emerald-400 border-emerald-500/40 bg-emerald-500/10" };
-      if (total >= 11) return { label: "👀 น่าจับตาเกณฑ์ผ่าน 60%+", style: "text-amber-400 border-amber-500/40 bg-amber-500/10" };
-      return { label: "⚠️ ยังไม่เข้าเกณฑ์ S-Curve", style: "text-zinc-400 border-zinc-700 bg-zinc-800/40" };
-    }
-
-    function ScreenerRow({ symbol, entry }) {
-      const [expanded, setExpanded] = useState(false);
-      const { series, loading } = entry || {};
-
-      const evalData = useMemo(() => calculateAutoSCurve(entry), [entry]);
-      const cls = series && series.length > 20 ? classify(series) : null;
-
-      if (loading && !evalData) {
-        return (
-          <div className="px-4 py-3 border-b border-zinc-800 text-xs text-zinc-500 flex items-center gap-2">
-            <RefreshCw size={12} className="animate-spin" /> กำลังประเมินเกณฑ์ S-Curve สำหรับ {symbol}...
-          </div>
-        );
-      }
-
-      const totalScore = evalData ? evalData.total : 0;
-      const verdict = autoVerdict(totalScore);
-
-      return (
-        <div className="border-b border-zinc-800 last:border-b-0">
-          <button onClick={() => setExpanded((e) => !e)} className="w-full flex items-center gap-3 px-3 py-3 hover:bg-zinc-900/60 text-left transition">
-            {expanded ? <ChevronDown size={14} className="text-zinc-500 shrink-0" /> : <ChevronRight size={14} className="text-zinc-500 shrink-0" />}
-            
-            <div className="flex items-center gap-3 min-w-[180px] sm:min-w-[240px] shrink-0">
-              <StockLogo symbol={symbol} logoUrl={entry?.profile?.logo} size={28} />
-              <div className="min-w-0">
-                <div className="font-mono font-bold text-zinc-100 text-sm leading-tight">{symbol}</div>
-                <div className="text-[11px] text-zinc-400 truncate max-w-[120px] sm:max-w-[180px] font-sans">
-                  {getStockName(symbol, entry?.profile?.name)}
-                </div>
-              </div>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] sm:text-xs font-mono text-zinc-400 flex-1 min-w-[180px]">
-              <span>รายได้โต: <strong className={evalData?.revGrowthPct >= 20 ? "text-emerald-400" : "text-zinc-200"}>{evalData?.revGrowthPct != null ? `${evalData.revGrowthPct.toFixed(1)}%` : "—"}</strong></span>
-              <span>Margin: <strong className={evalData?.grossMarginPct >= 50 ? "text-emerald-400" : "text-zinc-200"}>{evalData?.grossMarginPct != null ? `${evalData.grossMarginPct.toFixed(1)}%` : "—"}</strong></span>
-              <span>Mkt Cap: <strong className="text-zinc-200">{evalData?.mktCapB ? `$${evalData.mktCapB.toFixed(1)}B` : "—"}</strong></span>
-            </div>
-
-            {cls && (
-              <span className={`text-[11px] px-2 py-0.5 rounded border shrink-0 ${TREND_STYLE[cls.trend]}`}>
-                {TREND_TH[cls.trend]}
-              </span>
-            )}
-
-            <div className="flex items-center gap-2 ml-auto shrink-0">
-              <span className="font-mono text-base font-bold text-zinc-100 bg-zinc-950 px-2.5 py-0.5 rounded border border-zinc-800">
-                {totalScore}<span className="text-xs font-normal text-zinc-500">/20</span>
-              </span>
-              <span className={`text-xs px-2.5 py-1 rounded border font-medium ${verdict.style}`}>
-                {verdict.label}
-              </span>
-            </div>
-          </button>
-
-          {expanded && evalData && (
-            <div className="px-4 pb-4 pt-2 bg-zinc-950/60 border-t border-zinc-800/60 space-y-3">
-              <div className="text-xs text-zinc-400 flex items-center justify-between">
-                <span>📊 ข้อมูลพื้นฐานหลัก (Key Fundamentals)</span>
-                <span className="font-mono text-[11px] text-zinc-500">ที่มา: Finnhub / Twelve Data</span>
-              </div>
-
-              <div className="grid grid-cols-3 gap-2.5">
-                <div className="bg-zinc-900 border border-zinc-800 rounded p-3">
-                  <div className="text-[10px] text-zinc-500 mb-1">รายได้เติบโต YoY (Revenue Growth)</div>
-                  <div className={`font-mono font-bold text-base sm:text-lg ${evalData.revGrowthPct >= 20 ? "text-emerald-400" : "text-zinc-100"}`}>
-                    {evalData.revGrowthPct != null ? `${evalData.revGrowthPct.toFixed(1)}%` : "—"}
-                  </div>
-                </div>
-                <div className="bg-zinc-900 border border-zinc-800 rounded p-3">
-                  <div className="text-[10px] text-zinc-500 mb-1">Gross Margin</div>
-                  <div className={`font-mono font-bold text-base sm:text-lg ${evalData.grossMarginPct >= 50 ? "text-emerald-400" : "text-zinc-100"}`}>
-                    {evalData.grossMarginPct != null ? `${evalData.grossMarginPct.toFixed(1)}%` : "—"}
-                  </div>
-                </div>
-                <div className="bg-zinc-900 border border-zinc-800 rounded p-3">
-                  <div className="text-[10px] text-zinc-500 mb-1">Market Cap</div>
-                  <div className="font-mono font-bold text-base sm:text-lg text-zinc-100">
-                    {evalData.mktCapB ? `$${evalData.mktCapB.toFixed(1)}B` : "—"}
-                  </div>
-                </div>
-              </div>
-
-              <div className="text-xs text-zinc-400 flex items-center justify-between pt-1">
-                <span>🔥 รายละเอียดการวิเคราะห์อัลกอริทึม S-Curve สแกนอัตโนมัติ:</span>
-                <span className="font-mono text-[11px] text-zinc-500">Auto Score Breakdown</span>
-              </div>
-
-              <div className="grid sm:grid-cols-2 gap-2.5">
-                {S_CURVE_RULES.map((rule) => {
-                  const scoreKey = rule.key;
-                  const scoreVal = evalData[scoreKey];
-                  const notes = evalData.notes[scoreKey] || [];
-
-                  return (
-                    <div key={rule.key} className="bg-zinc-900 border border-zinc-800 rounded p-3">
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="text-xs font-semibold text-zinc-200">{rule.label}</span>
-                        <span className={`font-mono text-xs font-bold px-2 py-0.5 rounded ${scoreVal >= 4 ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30" : "bg-zinc-800 text-zinc-300"}`}>
-                          {scoreVal} / 5 คะแนน
-                        </span>
-                      </div>
-                      <div className="text-[11px] text-zinc-500 mb-2">{rule.desc}</div>
-                      
-                      <div className="flex flex-wrap gap-1">
-                        {notes.map((n, i) => (
-                          <span key={i} className="text-[10px] bg-zinc-950 text-emerald-400 border border-emerald-500/20 px-1.5 py-0.5 rounded">
-                            ✓ {n}
-                          </span>
-                        ))}
-                        {notes.length === 0 && (
-                          <span className="text-[10px] text-zinc-600 italic">ไม่พบตัวเร่งตามเกณฑ์ข้อนี้</span>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-        </div>
-      );
-    }
-
-    /* ============================================================
        MAIN APP
        ============================================================ */
     function App() {
@@ -3812,9 +3710,6 @@
       const [refreshCooldown, setRefreshCooldown] = useState(0);
       const [tdCallsToday, setTdCallsToday] = useState(0);
       const cooldownRef = useRef(null);
-
-      const [screenerFilter, setScreenerFilter] = useState("ALL");
-      const [screenerSort, setScreenerSort] = useState("SCORE");
 
       const [watchlistTrendFilter, setWatchlistTrendFilter] = useState("ALL");
       const [watchlistSearch, setWatchlistSearch] = useState("");
@@ -4095,34 +3990,6 @@
         reader.readAsText(file);
       };
 
-      const sortedScreenerSymbols = useMemo(() => {
-        let list = symbols.map((sym) => {
-          const entry = dataMap[sym];
-          const evalData = calculateAutoSCurve(entry);
-          return { symbol: sym, entry, evalData, totalScore: evalData ? evalData.total : 0 };
-        });
-
-        if (screenerFilter === "CANDIDATES") {
-          list = list.filter((item) => item.totalScore >= 16);
-        } else if (screenerFilter === "WATCH") {
-          list = list.filter((item) => item.totalScore >= 11 && item.totalScore < 16);
-        } else if (screenerFilter === "UNQUALIFIED") {
-          list = list.filter((item) => item.totalScore < 11);
-        }
-
-        list.sort((a, b) => {
-          if (screenerSort === "REV") {
-            return (b.evalData?.revGrowthPct ?? -999) - (a.evalData?.revGrowthPct ?? -999);
-          }
-          if (screenerSort === "MARGIN") {
-            return (b.evalData?.grossMarginPct ?? -999) - (a.evalData?.grossMarginPct ?? -999);
-          }
-          return b.totalScore - a.totalScore;
-        });
-
-        return list;
-      }, [symbols, dataMap, screenerFilter, screenerSort]);
-
       const filteredWatchlistSymbols = useMemo(() => {
         return symbols.filter((sym) => {
           const entry = dataMap[sym];
@@ -4150,7 +4017,6 @@
             <div>
               <div className="font-semibold text-sm flex items-center gap-2 tracking-tight">
                 US Stock Terminal
-                <span className="text-[10px] bg-gradient-to-r from-blue-500/20 to-purple-500/20 text-blue-300 border border-blue-500/40 px-1.5 py-0.5 rounded-full font-mono">v3.5</span>
               </div>
               <div className="text-[11px] text-zinc-500">Twelve Data (ราคา & กราฟ) | Finnhub (งบการเงิน & โลโก้)</div>
             </div>
@@ -4256,12 +4122,6 @@
                 <Radar size={14} /> Watchlist & Technical
               </button>
               <button
-                onClick={() => setTab("screener")}
-                className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-medium transition-all ${tab === "screener" ? "bg-gradient-to-r from-blue-600 to-indigo-600 text-white font-semibold shadow-md shadow-blue-950/40" : "text-zinc-400 hover:text-zinc-100 hover:bg-zinc-900"}`}
-              >
-                <Zap size={14} /> 10x S-Curve Screener
-              </button>
-              <button
                 onClick={() => setTab("sector")}
                 className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-medium transition-all ${tab === "sector" ? "bg-gradient-to-r from-blue-600 to-indigo-600 text-white font-semibold shadow-md shadow-blue-950/40" : "text-zinc-400 hover:text-zinc-100 hover:bg-zinc-900"}`}
               >
@@ -4358,70 +4218,6 @@
                   {filteredWatchlistSymbols.length === 0 && (
                     <div className="text-center text-zinc-500 py-12 bg-zinc-900 border border-zinc-800 rounded-lg text-xs">
                       ไม่พบรายการหุ้นตรงตามเงื่อนไขค้นหา
-                    </div>
-                  )}
-                </div>
-            </div>
-
-            <div className={tab === "screener" ? "space-y-4" : "hidden"}>
-                {!fhKey.trim() && (
-                  <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 text-xs text-amber-300 flex items-start gap-2">
-                    <span>⚠️</span>
-                    <span>
-                      ยังไม่ได้ใส่ <strong>Finnhub API Key</strong> — ข้อมูลรายได้เติบโต (Revenue Growth), Gross Margin,
-                      Market Cap และคะแนน S-Curve บางส่วนจะแสดงเป็น "—" จนกว่าจะตั้งค่า Finnhub Key ในเมนู ⚙ ที่มุมขวาบน
-                    </span>
-                  </div>
-                )}
-
-                <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-4 flex flex-wrap items-center justify-between gap-3">
-                  <div>
-                    <div className="font-semibold text-base flex items-center gap-2">
-                      <Zap className="text-amber-400" size={18} />
-                      Automated 10x-100x S-Curve Screener
-                    </div>
-                    <div className="text-xs text-zinc-400 mt-1">
-                      อัลกอริทึมสแกนปัจจัยพื้นฐาน (Finnhub) + เทคนิคัล (Twelve Data) คะแนนเต็ม 20 คะแนน
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-3 text-xs flex-wrap">
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-zinc-400">ตัวกรอง:</span>
-                      <select
-                        value={screenerFilter}
-                        onChange={(e) => setScreenerFilter(e.target.value)}
-                        className="bg-zinc-950 border border-zinc-800 rounded px-2.5 py-1 text-zinc-200 font-mono"
-                      >
-                        <option value="ALL">ทั้งหมด ({symbols.length})</option>
-                        <option value="CANDIDATES">🔥 ตัวเต็ง S-Curve (16+ คะแนน)</option>
-                        <option value="WATCH">👀 น่าจับตา (11-15 คะแนน)</option>
-                        <option value="UNQUALIFIED">⚠️ ยังไม่เข้าเกณฑ์ (&lt;11 คะแนน)</option>
-                      </select>
-                    </div>
-
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-zinc-400">เรียงตาม:</span>
-                      <select
-                        value={screenerSort}
-                        onChange={(e) => setScreenerSort(e.target.value)}
-                        className="bg-zinc-950 border border-zinc-800 rounded px-2.5 py-1 text-zinc-200 font-mono"
-                      >
-                        <option value="SCORE">คะแนน S-Curve รวม</option>
-                        <option value="REV">อัตราการเติบโตรายได้ YoY</option>
-                        <option value="MARGIN">อัตรากำไรขั้นต้น (Gross Margin)</option>
-                      </select>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="bg-zinc-900 border border-zinc-800 rounded-lg overflow-hidden divide-y divide-zinc-800">
-                  {sortedScreenerSymbols.map(({ symbol, entry }) => (
-                    <ScreenerRow key={symbol} symbol={symbol} entry={entry} />
-                  ))}
-                  {sortedScreenerSymbols.length === 0 && (
-                    <div className="text-center text-zinc-500 py-12 text-xs">
-                      ไม่พบรายการหุ้นที่ตรงกับเงื่อนไขตัวกรอง S-Curve
                     </div>
                   )}
                 </div>
