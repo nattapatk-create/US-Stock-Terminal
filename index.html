@@ -99,7 +99,7 @@
     const { useState, useEffect, useMemo, useCallback, useRef, useDeferredValue } = React;
     const {
       ComposedChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
-      ResponsiveContainer, ReferenceLine
+      ResponsiveContainer, ReferenceLine, Bar, Cell, Legend
     } = Recharts;
 
     /* ============================================================
@@ -681,12 +681,15 @@
       return age >= 0 && age < CACHE_TTL_MS;
     }
 
-    function tdCounterKey() {
-      return `td-calls-${new Date().toISOString().slice(0, 10)}`;
+    // ตัวนับจำนวนคำขอรายวันแบบ generic ใช้ร่วมกันทั้ง Twelve Data และ Finnhub เพื่อให้เห็น
+    // "สัดส่วนภาระ" ของแต่ละ API ชัดเจน — เดิมมีแค่ตัวนับของ Twelve Data ตัวเดียว ทำให้มองไม่ออกว่า
+    // Finnhub ถูกใช้งานคุ้มโควตาหรือไม่ (ส่วนใหญ่ปล่อยว่างขณะที่ Twelve Data ถูกรัดคอด้วย rate limit)
+    function apiCounterKey(provider) {
+      return `${provider}-calls-${new Date().toISOString().slice(0, 10)}`;
     }
-    function bumpTdCalls() {
+    function bumpApiCalls(provider) {
       try {
-        const k = tdCounterKey();
+        const k = apiCounterKey(provider);
         const next = (parseInt(localStorage.getItem(k), 10) || 0) + 1;
         localStorage.setItem(k, String(next));
         return next;
@@ -694,28 +697,47 @@
         return null;
       }
     }
-    function getTdCallsToday() {
+    function getApiCallsToday(provider) {
       try {
-        return parseInt(localStorage.getItem(tdCounterKey()), 10) || 0;
+        return parseInt(localStorage.getItem(apiCounterKey(provider)), 10) || 0;
       } catch {
         return 0;
       }
     }
+    function bumpTdCalls() { return bumpApiCalls("td"); }
+    function getTdCallsToday() { return getApiCallsToday("td"); }
+    function bumpFhCalls() { return bumpApiCalls("fh"); }
+    function getFhCallsToday() { return getApiCallsToday("fh"); }
 
     let sectorAutoScanned = false;
 
     /* ============================================================
        TECHNICAL ENGINE
        ============================================================ */
+    // EMA แบบ "SMA-seeded" — มาตรฐานเดียวกับ StockCharts/แพลตฟอร์มกราฟหุ้นส่วนใหญ่:
+    // ค่า EMA ตัวแรกที่คำนวณได้ = ค่าเฉลี่ยเลขคณิต (SMA) ของ `period` แท่งแรกที่มีข้อมูลครบ
+    // จากนั้นจึงใช้สูตร EMA แบบวนซ้ำต่อจากจุดนั้น (ก่อนหน้านั้นเป็น null เพราะข้อมูลไม่พอ)
+    // วิธีเดิม (seed = แท่งแรกสุดของราคาที่มี) ทำให้ EMA คลาดเคลื่อนจากค่าที่แพลตฟอร์มอื่นแสดง
+    // มากในช่วงแรก และคลาดเคลื่อนต่อเนื่องไปเรื่อย ๆ โดยเฉพาะ EMA200 ถ้าข้อมูลย้อนหลังมีไม่มากพอ
     function ema(values, period) {
       const k = 2 / (period + 1);
       const out = new Array(values.length).fill(null);
-      let prev = null;
-      values.forEach((v, i) => {
-        if (v == null) return;
-        prev = prev == null ? v : v * k + prev * (1 - k);
+      let count = 0, sum = 0, seedIdx = -1, prev = null;
+      for (let i = 0; i < values.length; i++) {
+        const v = values[i];
+        if (v == null) { count = 0; sum = 0; continue; }
+        if (seedIdx === -1) {
+          count++; sum += v;
+          if (count === period) {
+            seedIdx = i;
+            prev = sum / period; // seed = SMA ของ `period` แท่งแรกที่มีข้อมูลครบ
+            out[i] = prev;
+          }
+          continue;
+        }
+        prev = v * k + prev * (1 - k);
         out[i] = prev;
-      });
+      }
       return out;
     }
 
@@ -807,7 +829,10 @@
       const { hist } = macd(closes);
       const rsiVal = rsiArr[last];
       const h = hist[last], hPrev = hist[last - 1];
-      const has200 = closes.length > 200;
+      // เดิมเช็คแค่ closes.length > 200 (จำนวนแท่งทั้งหมด) ซึ่งไม่รับประกันว่า ema(closes,200)
+      // จะคำนวณค่าออกมาได้จริง (ฟังก์ชัน ema แบบ SMA-seeded ต้องการ 200 แท่ง "ต่อเนื่องไม่มีช่องว่าง")
+      // เช็คจากผลลัพธ์จริง e200[last] != null แม่นยำกว่าและกันเคส EMA200 เป็น null หลุดไปแสดงผลผิด
+      const has200 = e200[last] != null;
 
       let trend = "Sideways", trendScore = 0;
       if (e20[last] != null && e50[last] != null) {
@@ -833,15 +858,48 @@
     /* ============================================================
        API LAYER
        ============================================================ */
-    async function fetchSeries(symbol, tdKey, interval = "1week", outputsize = 220) {
+    // จำนวนแท่งที่ดึงต่อ Timeframe — เดิมใช้ 220 แท่งตายตัวทุก interval ซึ่งไม่พอสำหรับ EMA200
+    // (ฟังก์ชัน ema ต้องเห็น 200 แท่งก่อนจะเริ่ม "seed" ได้ เหลือ margin แค่ ~20 แท่งให้ EMA200
+    // ลู่เข้าค่าจริง ทำให้ตัวเลขคลาดเคลื่อนจากแพลตฟอร์มอื่นได้มาก) เพิ่ม buffer ให้มากพอ:
+    // - 1day: 500 แท่ง (~200 แท่งสำหรับ seed + ~300 แท่ง buffer ให้ EMA200 ลู่เข้า)
+    // - 1week: 300 แท่ง (~200 สัปดาห์สำหรับ seed + ~100 สัปดาห์ buffer)
+    const OUTPUTSIZE_BY_INTERVAL = { "1day": 500, "1week": 300 };
+    const MIN_BARS_FOR_FULL_INDICATORS = 20; // ต่ำกว่านี้ยังพอมองเทรนด์คร่าว ๆ ได้ แต่ EMA/RSI/MACD จะไม่ครบ
+
+    function isTransientTdError(data, res) {
+      const msg = (data?.message || "").toLowerCase();
+      return res.status === 429 || data?.code === 429 ||
+        msg.includes("run out of api credits") || msg.includes("too many requests") || msg.includes("limit");
+    }
+
+    async function fetchSeries(symbol, tdKey, interval = "1week", outputsize = null) {
+      const size = outputsize || OUTPUTSIZE_BY_INTERVAL[interval] || 220;
       return tdQueue(async () => {
         bumpTdCalls();
-        const res = await fetch(`${TD_BASE}/time_series?symbol=${encodeURIComponent(symbol)}&interval=${interval}&outputsize=${outputsize}&apikey=${tdKey}`);
-        const data = await res.json();
-        if (!data.values) throw new Error(data.message || "ไม่พบข้อมูลราคาย้อนหลัง (Twelve Data)");
-        return data.values.slice().reverse().map((v) => ({
+        let data, res;
+        for (let attempt = 0; attempt < 2; attempt++) {
+          res = await fetch(`${TD_BASE}/time_series?symbol=${encodeURIComponent(symbol)}&interval=${interval}&outputsize=${size}&apikey=${tdKey}`);
+          data = await res.json();
+          if (data.values) break;
+          // เจอ rate limit / credit หมดชั่วคราว → รอแล้วลองใหม่อีก 1 ครั้งก่อนจะฟ้อง error จริง ๆ
+          // (ปัญหาเดิม: บางหุ้นสลับ TF แล้ว "กราฟไม่ขึ้น" เพราะโดน rate limit แล้วไม่ retry เลย)
+          if (attempt === 0 && isTransientTdError(data, res)) {
+            await new Promise((r) => setTimeout(r, tdMinIntervalMs * 2));
+            continue;
+          }
+          break;
+        }
+        if (!data.values) {
+          const reason = data.message || `ไม่พบข้อมูลราคาย้อนหลังของ ${symbol} ที่ Timeframe นี้ (Twelve Data)`;
+          throw new Error(reason);
+        }
+        const bars = data.values.slice().reverse().map((v) => ({
           date: v.datetime, open: +v.open, high: +v.high, low: +v.low, close: +v.close, volume: +v.volume,
         }));
+        if (bars.length < MIN_BARS_FOR_FULL_INDICATORS) {
+          throw new Error(`${symbol}: มีข้อมูลย้อนหลังที่ Timeframe นี้แค่ ${bars.length} แท่ง (ต้องการอย่างน้อย ${MIN_BARS_FOR_FULL_INDICATORS} แท่งขึ้นไปจึงจะคำนวณแนวรับ/แนวต้าน/EMA/RSI/MACD ได้)`);
+        }
+        return bars;
       });
     }
 
@@ -867,7 +925,8 @@
     }
 
     // เก็บ fetchQuote ไว้เผื่ออนาคตต้องการราคาสด real-time แยกจากกราฟ แต่ตอน initial/refresh
-    // load ปกติจะไม่เรียกใช้แล้ว (ดู loadSymbol/loadSeries ด้านล่าง)
+    // load ปกติจะไม่เรียกใช้แล้ว (ดู loadSymbol/loadSeries ด้านล่าง) — ใช้เป็น fallback สุดท้าย
+    // เมื่อไม่มี Finnhub key เท่านั้น (ดู fetchQuoteBalanced ด้านล่าง)
     async function fetchQuote(symbol, tdKey) {
       return tdQueue(async () => {
         bumpTdCalls();
@@ -886,9 +945,68 @@
       });
     }
 
+    // ============================================================
+    // จุดสมดุลภาระระหว่าง Twelve Data กับ Finnhub
+    // ------------------------------------------------------------
+    // เดิม "ราคาล่าสุด" (quote) ถูกคำนวณจากแท่งราคาใน series ที่ดึงจาก Twelve Data เท่านั้น
+    // (deriveQuoteFromSeries) ทำให้ทุกครั้งที่อยากได้ราคาสดขึ้น ต้องยิง /time_series ของ
+    // Twelve Data ใหม่ทั้งเส้น (แพงและช้าเพราะโดน rate limit เข้ม ~8 คำขอ/นาทีในแผนฟรี) ทั้งที่
+    // Finnhub มีเอนด์พอยต์ /quote ที่เบามาก คืนแค่ราคาล่าสุด/เปลี่ยนแปลง% และโควตาฟรีสูงกว่ามาก
+    // (~60 คำขอ/นาที) แต่กลับแทบไม่ถูกใช้เลยนอกจากตอนดึง fundamentals ของหุ้นที่ผ่านเกณฑ์แล้ว
+    //
+    // fetchQuoteBalanced() คือจุดตัดสินใจกลางว่า "ราคาล่าสุด" ควรมาจากไหน โดยเรียงลำดับ:
+    //   1) มี Finnhub key → ใช้ Finnhub /quote (เบา เร็ว ไม่แตะโควตา Twelve Data เลย)
+    //   2) ไม่มี Finnhub key แต่มี series สดอยู่แล้ว → คำนวณจาก series เดิม (ไม่ยิง API เพิ่ม)
+    //   3) ไม่มีทั้งคู่ → ยิง Twelve Data /quote เป็นทางเลือกสุดท้ายเท่านั้น
+    // ผลคือภาระการ "รีเฟรชราคา" ส่วนใหญ่ย้ายไปอยู่ที่ Finnhub ซึ่งมีโควตาเหลือเฟือ เหลือให้
+    // Twelve Data ทำหน้าที่เดียวที่มันจำเป็นจริง ๆ คือดึงแท่งราคาย้อนหลัง (candles) สำหรับคำนวณ
+    // แนวรับ/แนวต้าน/EMA/RSI/MACD เท่านั้น ซึ่งไม่จำเป็นต้องอัปเดตถี่เท่าราคาล่าสุด
+    async function fetchFinnhubQuote(symbol, fhKey) {
+      return fhQueue(async () => {
+        bumpFhCalls();
+        const res = await fetch(`${FH_BASE}/quote?symbol=${encodeURIComponent(symbol)}&token=${fhKey}`);
+        const data = await res.json();
+        // Finnhub คืน c=0 เมื่อไม่พบสัญลักษณ์ หรือ error/limit — ถือว่าใช้ไม่ได้ ให้ผู้เรียก fallback ต่อ
+        if (data == null || !data.c) throw new Error("ดึงราคาล่าสุดจาก Finnhub ไม่สำเร็จ");
+        return {
+          close: +data.c,
+          percent_change: data.dp != null ? +data.dp : (data.pc ? ((data.c - data.pc) / data.pc) * 100 : 0),
+          open: +data.o,
+          high: +data.h,
+          low: +data.l,
+          previous_close: +data.pc,
+          volume: null, // Finnhub /quote แผนฟรีไม่มี volume — จะคง volume เดิมจาก series ไว้แทน (ดูผู้เรียก)
+        };
+      });
+    }
+
+    async function fetchQuoteBalanced(symbol, { tdKey, fhKey, fallbackSeries } = {}) {
+      const fh = (fhKey || "").trim();
+      if (fh) {
+        try {
+          const q = await fetchFinnhubQuote(symbol, fh);
+          // Finnhub ไม่ให้ volume มา ถ้ามี series เดิมอยู่ ใช้ volume แท่งล่าสุดของ series เสริมให้ครบ
+          const lastVol = fallbackSeries && fallbackSeries.length ? fallbackSeries[fallbackSeries.length - 1].volume : null;
+          return { ...q, volume: q.volume ?? lastVol ?? null, source: "finnhub" };
+        } catch (e) {
+          console.warn(`Finnhub quote ล้มเหลวสำหรับ ${symbol}, fallback ไปทาง series/Twelve Data:`, e.message);
+        }
+      }
+      if (fallbackSeries && fallbackSeries.length) {
+        return { ...deriveQuoteFromSeries(fallbackSeries), source: "series" };
+      }
+      const td = (tdKey || "").trim();
+      if (td) {
+        const q = await fetchQuote(symbol, td);
+        return { ...q, source: "twelvedata" };
+      }
+      return null;
+    }
+
     async function fetchFundamentals(symbol, fhKey) {
       if (!fhKey) return null;
       return fhQueue(async () => {
+        bumpFhCalls();
         const res = await fetch(`${FH_BASE}/stock/metric?symbol=${encodeURIComponent(symbol)}&metric=all&token=${fhKey}`);
         const data = await res.json();
         return data.metric || {};
@@ -898,6 +1016,7 @@
     async function fetchProfile(symbol, fhKey) {
       if (!fhKey) return null;
       return fhQueue(async () => {
+        bumpFhCalls();
         const res = await fetch(`${FH_BASE}/stock/profile2?symbol=${encodeURIComponent(symbol)}&token=${fhKey}`);
         return res.json();
       });
@@ -1757,19 +1876,37 @@
     /* ============================================================
        PRICE CHART
        ============================================================ */
+    // จำนวนแท่งที่แสดงบนกราฟ (ของเดิมตัดแค่ 90 แท่งสุดท้ายเพื่อความเร็ว) — EMA/RSI/MACD ยังคำนวณ
+    // จาก series เต็มเสมอ (ไม่ใช่แค่ 90 แท่งที่ตัดมาโชว์) เพื่อไม่ให้ค่าเพี้ยนจากการตัดข้อมูลทิ้ง
+    const CHART_VISIBLE_BARS = 90;
+
     function PriceChart({ series, support, resistance, timeframe = "1week" }) {
       const tfObj = TIMEFRAMES.find((t) => t.id === timeframe) || TIMEFRAMES[1];
 
       const data = useMemo(() => {
         const closes = series.map((b) => b.close);
+        const e20Arr = ema(closes, 20);
+        const e50Arr = ema(closes, 50);
         const e200Arr = ema(closes, 200);
+        const rsiArr = rsi(closes, 14);
+        const { line: macdLine, signal: macdSignal, hist: macdHist } = macd(closes);
 
-        return series.slice(-90).map((b, idx) => {
-          const originalIdx = series.length - 90 + idx;
+        const start = Math.max(0, series.length - CHART_VISIBLE_BARS);
+        return series.slice(start).map((b, idx) => {
+          const originalIdx = start + idx;
+          const prevClose = originalIdx > 0 ? series[originalIdx - 1].close : b.close;
           return {
             date: b.date.slice(0, 16),
             close: b.close,
+            ema20: e20Arr[originalIdx],
+            ema50: e50Arr[originalIdx],
             ema200: e200Arr[originalIdx],
+            volume: b.volume,
+            volUp: b.close >= prevClose,
+            rsi: rsiArr[originalIdx],
+            macdLine: macdLine[originalIdx],
+            macdSignal: macdSignal[originalIdx],
+            macdHist: macdHist[originalIdx],
           };
         });
       }, [series]);
@@ -1778,34 +1915,101 @@
         ...support.map((s) => s.price),
         ...resistance.map((r) => r.price),
         ...data.map((d) => d.close),
-        ...data.map((d) => d.ema200).filter(Boolean)
+        ...data.map((d) => d.ema20).filter(Boolean),
+        ...data.map((d) => d.ema50).filter(Boolean),
+        ...data.map((d) => d.ema200).filter(Boolean),
       ];
       const min = Math.min(...levels) * 0.985;
       const max = Math.max(...levels) * 1.015;
+      const maxVolume = Math.max(1, ...data.map((d) => d.volume || 0));
 
       return (
-        <ResponsiveContainer width="100%" height={230}>
-          <ComposedChart data={data} margin={{ top: 6, right: 52, left: 0, bottom: 0 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#1e1f33" vertical={false} />
-            <XAxis dataKey="date" tick={{ fill: "#7d7fa1", fontSize: 10 }} axisLine={{ stroke: "#31324a" }} tickLine={false} minTickGap={28} />
-            <YAxis domain={[min, max]} tick={{ fill: "#7d7fa1", fontSize: 10 }} axisLine={false} tickLine={false} width={46} tickFormatter={(v) => v.toFixed(0)} />
-            <Tooltip
-              contentStyle={{ background: "#141526", border: "1px solid #31324a", borderRadius: 10, fontSize: 12, boxShadow: "0 8px 24px rgba(0,0,0,0.45)" }}
-              labelStyle={{ color: "#a6a8c4" }}
-              formatter={(v, name) => [`$${v ? v.toFixed(2) : "—"}`, name === "close" ? `ราคาปิด (${tfObj.label})` : name]}
-            />
-            {resistance.map((r, i) => (
-              <ReferenceLine key={`r${i}`} y={r.price} stroke="#f87171" strokeDasharray="4 3" strokeOpacity={0.9 - i * 0.2}
-                label={{ value: `R${i + 1} ${r.price.toFixed(2)} (${r.touches}x)`, position: "right", fill: "#f87171", fontSize: 10 }} />
-            ))}
-            {support.map((s, i) => (
-              <ReferenceLine key={`s${i}`} y={s.price} stroke="#34d399" strokeDasharray="4 3" strokeOpacity={0.9 - i * 0.2}
-                label={{ value: `S${i + 1} ${s.price.toFixed(2)} (${s.touches}x)`, position: "right", fill: "#34d399", fontSize: 10 }} />
-            ))}
-            <Line type="monotone" dataKey="close" stroke="#8087f8" strokeWidth={1.75} dot={false} isAnimationActive={false} name="close" />
-            <Line type="monotone" dataKey="ema200" stroke="#c084fc" strokeWidth={1.5} strokeDasharray="3 3" dot={false} isAnimationActive={false} name="EMA200" />
-          </ComposedChart>
-        </ResponsiveContainer>
+        <div className="space-y-1.5">
+          {/* ราคา + แนวรับ/แนวต้าน + EMA 20/50/200 */}
+          <ResponsiveContainer width="100%" height={230}>
+            <ComposedChart data={data} margin={{ top: 6, right: 52, left: 0, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#1e1f33" vertical={false} />
+              <XAxis dataKey="date" tick={{ fill: "#7d7fa1", fontSize: 10 }} axisLine={{ stroke: "#31324a" }} tickLine={false} minTickGap={28} />
+              <YAxis domain={[min, max]} tick={{ fill: "#7d7fa1", fontSize: 10 }} axisLine={false} tickLine={false} width={46} tickFormatter={(v) => v.toFixed(0)} />
+              <Tooltip
+                contentStyle={{ background: "#141526", border: "1px solid #31324a", borderRadius: 10, fontSize: 12, boxShadow: "0 8px 24px rgba(0,0,0,0.45)" }}
+                labelStyle={{ color: "#a6a8c4" }}
+                formatter={(v, name) => [
+                  `$${v != null ? (+v).toFixed(2) : "—"}`,
+                  name === "close" ? `ราคาปิด (${tfObj.label})` : name,
+                ]}
+              />
+              <Legend wrapperStyle={{ fontSize: 10 }} formatter={(v) => <span style={{ color: "#a6a8c4" }}>{v}</span>} />
+              {resistance.map((r, i) => (
+                <ReferenceLine key={`r${i}`} y={r.price} stroke="#f87171" strokeDasharray="4 3" strokeOpacity={0.9 - i * 0.2}
+                  label={{ value: `R${i + 1} ${r.price.toFixed(2)} (${r.touches}x)`, position: "right", fill: "#f87171", fontSize: 10 }} />
+              ))}
+              {support.map((s, i) => (
+                <ReferenceLine key={`s${i}`} y={s.price} stroke="#34d399" strokeDasharray="4 3" strokeOpacity={0.9 - i * 0.2}
+                  label={{ value: `S${i + 1} ${s.price.toFixed(2)} (${s.touches}x)`, position: "right", fill: "#34d399", fontSize: 10 }} />
+              ))}
+              <Line type="monotone" dataKey="close" stroke="#8087f8" strokeWidth={1.75} dot={false} isAnimationActive={false} name="ราคาปิด" />
+              <Line type="monotone" dataKey="ema20" stroke="#facc15" strokeWidth={1.25} dot={false} isAnimationActive={false} name="EMA20" connectNulls />
+              <Line type="monotone" dataKey="ema50" stroke="#38bdf8" strokeWidth={1.25} dot={false} isAnimationActive={false} name="EMA50" connectNulls />
+              <Line type="monotone" dataKey="ema200" stroke="#c084fc" strokeWidth={1.5} strokeDasharray="3 3" dot={false} isAnimationActive={false} name="EMA200" connectNulls />
+            </ComposedChart>
+          </ResponsiveContainer>
+
+          {/* Volume */}
+          <ResponsiveContainer width="100%" height={64}>
+            <ComposedChart data={data} margin={{ top: 0, right: 52, left: 0, bottom: 0 }}>
+              <XAxis dataKey="date" hide />
+              <YAxis domain={[0, maxVolume * 1.1]} tick={{ fill: "#7d7fa1", fontSize: 9 }} axisLine={false} tickLine={false} width={46} tickFormatter={fmtBig} />
+              <Tooltip
+                contentStyle={{ background: "#141526", border: "1px solid #31324a", borderRadius: 10, fontSize: 12 }}
+                labelStyle={{ color: "#a6a8c4" }}
+                formatter={(v) => [fmtBig(v), "Volume"]}
+              />
+              <Bar dataKey="volume" name="Volume" isAnimationActive={false}>
+                {data.map((d, i) => (
+                  <Cell key={i} fill={d.volUp ? "#34d39980" : "#f8717180"} />
+                ))}
+              </Bar>
+            </ComposedChart>
+          </ResponsiveContainer>
+
+          {/* RSI(14) */}
+          <ResponsiveContainer width="100%" height={70}>
+            <ComposedChart data={data} margin={{ top: 4, right: 52, left: 0, bottom: 0 }}>
+              <XAxis dataKey="date" hide />
+              <YAxis domain={[0, 100]} ticks={[30, 50, 70]} tick={{ fill: "#7d7fa1", fontSize: 9 }} axisLine={false} tickLine={false} width={46} />
+              <Tooltip
+                contentStyle={{ background: "#141526", border: "1px solid #31324a", borderRadius: 10, fontSize: 12 }}
+                labelStyle={{ color: "#a6a8c4" }}
+                formatter={(v) => [v != null ? (+v).toFixed(1) : "—", "RSI(14)"]}
+              />
+              <ReferenceLine y={70} stroke="#f87171" strokeDasharray="3 3" strokeOpacity={0.6} />
+              <ReferenceLine y={30} stroke="#34d399" strokeDasharray="3 3" strokeOpacity={0.6} />
+              <Line type="monotone" dataKey="rsi" stroke="#fbbf24" strokeWidth={1.5} dot={false} isAnimationActive={false} name="RSI(14)" connectNulls />
+            </ComposedChart>
+          </ResponsiveContainer>
+
+          {/* MACD(12,26,9) */}
+          <ResponsiveContainer width="100%" height={80}>
+            <ComposedChart data={data} margin={{ top: 4, right: 52, left: 0, bottom: 0 }}>
+              <XAxis dataKey="date" tick={{ fill: "#7d7fa1", fontSize: 9 }} axisLine={{ stroke: "#31324a" }} tickLine={false} minTickGap={28} />
+              <YAxis tick={{ fill: "#7d7fa1", fontSize: 9 }} axisLine={false} tickLine={false} width={46} tickFormatter={(v) => v.toFixed(1)} />
+              <Tooltip
+                contentStyle={{ background: "#141526", border: "1px solid #31324a", borderRadius: 10, fontSize: 12 }}
+                labelStyle={{ color: "#a6a8c4" }}
+                formatter={(v, name) => [v != null ? (+v).toFixed(3) : "—", name]}
+              />
+              <ReferenceLine y={0} stroke="#454764" />
+              <Bar dataKey="macdHist" name="Histogram" isAnimationActive={false}>
+                {data.map((d, i) => (
+                  <Cell key={i} fill={(d.macdHist || 0) >= 0 ? "#34d399" : "#f87171"} />
+                ))}
+              </Bar>
+              <Line type="monotone" dataKey="macdLine" stroke="#8087f8" strokeWidth={1.25} dot={false} isAnimationActive={false} name="MACD" connectNulls />
+              <Line type="monotone" dataKey="macdSignal" stroke="#fbbf24" strokeWidth={1.25} dot={false} isAnimationActive={false} name="Signal" connectNulls />
+            </ComposedChart>
+          </ResponsiveContainer>
+        </div>
       );
     }
 
@@ -3257,6 +3461,11 @@
                 </div>
               )}
               {loading && !series && <div className="text-zinc-500 text-sm py-8 text-center">กำลังโหลดข้อมูลกราฟ Timeframe {tfObj.name} จาก Twelve Data…</div>}
+              {!loading && !error && !analysis && (
+                <div className="text-zinc-500 text-sm py-8 text-center">
+                  ยังไม่มีข้อมูลกราฟสำหรับ Timeframe {tfObj.name} — กดปุ่ม <RefreshCw size={12} className="inline -mt-0.5" /> เพื่อโหลดใหม่
+                </div>
+              )}
 
               {analysis && (
                 <>
@@ -3731,6 +3940,7 @@
       const [booted, setBooted] = useState(false);
       const [refreshCooldown, setRefreshCooldown] = useState(0);
       const [tdCallsToday, setTdCallsToday] = useState(0);
+      const [fhCallsToday, setFhCallsToday] = useState(0);
       const cooldownRef = useRef(null);
 
       const [watchlistTrendFilter, setWatchlistTrendFilter] = useState("ALL");
@@ -3769,7 +3979,7 @@
       }, []);
 
       useEffect(() => {
-        const tick = () => setTdCallsToday(getTdCallsToday());
+        const tick = () => { setTdCallsToday(getTdCallsToday()); setFhCallsToday(getFhCallsToday()); };
         tick();
         const id = setInterval(tick, 3000);
         return () => clearInterval(id);
@@ -3913,10 +4123,35 @@
       }, [loadSeries, loadSymbol]);
 
       const handleRefreshSymbol = useCallback((s) => {
-        // ผู้ใช้กดรีเฟรชรายตัวเอง = ต้องการข้อมูลใหม่จริง ๆ จึงข้าม TTL cache (forceRefresh)
+        // ผู้ใช้กดรีเฟรชรายตัวเอง = ต้องการข้อมูลใหม่จริง ๆ (รวมแท่งราคา/อินดิเคเตอร์) จึงยิง
+        // Twelve Data เต็มรูปแบบเหมือนเดิม เพราะเป็นการกดทีละตัว ไม่ใช่ภาระซ้ำ ๆ กับทุกสัญลักษณ์
         loadSymbol(s, true, dataMapRef.current[s]?.timeframe || DEFAULT_TIMEFRAME, { forceRefresh: true });
       }, [loadSymbol]);
 
+      // อัปเดตเฉพาะ "ราคาล่าสุด" (quote) ผ่าน Finnhub แบบเบา ๆ โดยไม่แตะ Twelve Data เลย และไม่
+      // กระทบแท่งราคา/อินดิเคเตอร์ที่คำนวณไว้แล้ว ใช้กับการรีเฟรชจำนวนมาก (ปุ่ม "รีเฟรชทั้งหมด")
+      // เพื่อย้ายภาระส่วนใหญ่ไปที่ Finnhub ซึ่งมีโควตาเหลือเฟือกว่า Twelve Data มาก
+      const refreshQuoteOnly = useCallback(async (symbol) => {
+        const fh = fhKey.trim();
+        if (!fh) return false; // ไม่มี Finnhub key ให้ผู้เรียก fallback ไปใช้ full refresh แทน
+        try {
+          const existing = dataMapRef.current[symbol] || {};
+          const quote = await fetchQuoteBalanced(symbol, { fhKey: fh, fallbackSeries: existing.series });
+          if (!quote) return false;
+          setEntry(symbol, { quote, stale: false });
+          saveCachedEntry(symbol, { ...existing, quote });
+          return true;
+        } catch (e) {
+          console.warn(`Quick quote refresh ล้มเหลวสำหรับ ${symbol}:`, e.message);
+          return false; // เงียบไว้โดยตั้งใจ ไม่ทับ error ของข้อมูลกราฟหลักด้วยความล้มเหลวของการอัปเดตราคาเบา ๆ
+        }
+      }, [fhKey, setEntry]);
+
+      // กติกาตายตัวของ Watchlist: รายชื่อหุ้นใน Watchlist (state `symbols`) จะถูกแก้ไข
+      // ได้แค่ 2 ทางเท่านั้นคือ addSymbol (ผู้ใช้กดเพิ่มเอง) และ removeSymbol (ผู้ใช้กดลบเอง)
+      // — รวมถึงตอนนำเข้าไฟล์ Backup ที่ผู้ใช้เลือกไฟล์เอง — ห้ามมีจุดอื่นใดในแอป (การสแกน,
+      // การสลับ Timeframe, การรีเฟรชข้อมูล, ตัวจับเวลา auto-refresh ฯลฯ) เรียก setSymbols
+      // หรือแก้ไข localStorage key "us-dash-watchlist" โดยพลการเด็ดขาด
       const addSymbol = useCallback((raw) => {
         const s = raw.trim().toUpperCase();
         if (!s || symbols.includes(s) || symbols.length >= MAX_SYMBOLS) return;
@@ -3937,7 +4172,23 @@
 
       const refreshAll = useCallback(() => {
         if (refreshCooldown > 0) return;
-        symbols.forEach((s) => loadSymbol(s, true, dataMapRef.current[s]?.timeframe || DEFAULT_TIMEFRAME, { forceRefresh: true }));
+        const fh = fhKey.trim();
+        // จุดสมดุลภาระหลัก: "รีเฟรชทั้งหมด" เดิมยิง Twelve Data เต็มรูปแบบให้ทุกสัญลักษณ์ในครั้งเดียว
+        // (แพงและช้าเพราะโดน rate limit เข้มของ Twelve Data) ตอนนี้แยกเป็น 2 กรณีต่อสัญลักษณ์:
+        //   - แท่งราคา/อินดิเคเตอร์ยังสดอยู่ (ไม่เกิน CACHE_TTL_MS) และมี Finnhub key → อัปเดตแค่
+        //     ราคาล่าสุดผ่าน Finnhub (เบา เร็ว ไม่แตะโควตา Twelve Data)
+        //   - แท่งราคาเก่าเกินไป/ยังไม่เคยโหลด หรือไม่มี Finnhub key → ต้องยิง Twelve Data เต็ม
+        //     รูปแบบเหมือนเดิม เพราะเป็นจุดเดียวที่ให้ข้อมูล candle ได้จริง
+        symbols.forEach((s) => {
+          const cached = dataMapRef.current[s];
+          const seriesFresh = cached && cached.series && cached.series.length >= 20 &&
+            cached.cachedAt && (Date.now() - cached.cachedAt) < CACHE_TTL_MS;
+          if (fh && seriesFresh) {
+            refreshQuoteOnly(s);
+          } else {
+            loadSymbol(s, true, cached?.timeframe || DEFAULT_TIMEFRAME, { forceRefresh: true });
+          }
+        });
         setRefreshCooldown(20);
         cooldownRef.current = setInterval(() => {
           setRefreshCooldown((c) => {
@@ -3945,7 +4196,7 @@
             return c - 1;
           });
         }, 1000);
-      }, [refreshCooldown, symbols, loadSymbol]);
+      }, [refreshCooldown, symbols, loadSymbol, refreshQuoteOnly, fhKey]);
 
       const commitKeys = () => {
         const td = tdKeyDraft.trim();
@@ -4040,14 +4291,16 @@
               <div className="font-semibold text-sm flex items-center gap-2 tracking-tight">
                 US Stock Terminal
               </div>
-              <div className="text-[11px] text-zinc-500">Twelve Data (ราคา & กราฟ) | Finnhub (งบการเงิน & โลโก้)</div>
+              <div className="text-[11px] text-zinc-500">Twelve Data (แท่งราคา & อินดิเคเตอร์) | Finnhub (ราคาล่าสุด & งบการเงิน & โลโก้)</div>
             </div>
             <div className="ml-auto flex items-center gap-2">
-              <span className="text-xs font-mono text-zinc-400 border border-zinc-800 bg-zinc-900/70 px-2.5 py-1.5 rounded-lg flex items-center gap-1.5">
+              <span className="text-xs font-mono text-zinc-400 border border-zinc-800 bg-zinc-900/70 px-2.5 py-1.5 rounded-lg flex items-center gap-1.5" title="Twelve Data ใช้สำหรับดึงแท่งราคาย้อนหลัง (candles) เพื่อคำนวณแนวรับ/แนวต้าน/EMA/RSI/MACD เท่านั้น ส่วนราคาล่าสุดแบบรายวันจะดึงผ่าน Finnhub แทนเพื่อลดภาระ Twelve Data">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 live-dot" />
-                TD Calls Today: <strong className="text-blue-300">{tdCallsToday}</strong>
+                TD: <strong className="text-blue-300">{tdCallsToday}</strong>
                 <span className="text-zinc-700 mx-1">|</span>
                 {tdRatePerMin}/นาที
+                <span className="text-zinc-700 mx-1">|</span>
+                FH: <strong className="text-emerald-300">{fhCallsToday}</strong>
               </span>
               <button
                 onClick={exportBackup}
@@ -4218,6 +4471,7 @@
                     <button
                       onClick={refreshAll}
                       disabled={refreshCooldown > 0}
+                      title="ราคาล่าสุดของสัญลักษณ์ที่แท่งราคายังสดอยู่จะอัปเดตผ่าน Finnhub (เบา ไม่ใช้โควตา Twelve Data) ส่วนสัญลักษณ์ที่แท่งราคาเก่าเกินไปจะดึงใหม่เต็มรูปแบบผ่าน Twelve Data"
                       className="px-3 py-1 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50 rounded text-xs text-zinc-300 flex items-center gap-1.5 shrink-0"
                     >
                       <RefreshCw size={13} className={refreshCooldown > 0 ? "animate-spin" : ""} />
