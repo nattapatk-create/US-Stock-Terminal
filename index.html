@@ -1300,6 +1300,10 @@
     const WEEKLY_PICK_COUNT = 10;
     const SCAN_BUFFER = 30;
     const MAX_SCAN_POOL = 2000;
+    // เก็บ "ผลสแกน" (ลิสต์หุ้นที่เข้าเกณฑ์) ของแต่ละสัปดาห์ไว้ใน localStorage โดยคีย์ด้วย weekKey
+    // เพื่อให้สแกนพูลทั้งหมดแค่ "ครั้งเดียวต่อสัปดาห์" — เปิดเว็บใหม่หรือสลับแท็บกี่ครั้งก็ตาม
+    // จะไม่ไล่สแกนพูลซ้ำอีก จนกว่าจะขึ้นสัปดาห์ใหม่ (weekKey เปลี่ยน) ถึงจะสแกนชุดใหม่โดยอัตโนมัติ
+    const WEEKLY_PICKS_STORE_KEY = "us-dash-weekly-picks-v1";
 
     function isWeeklyPickEligible(cls) {
       if (!cls) return false;
@@ -1537,9 +1541,25 @@
         if (!tdKey) return;
         setLoading(true);
         const rotationPool = today.rotation;
-        setScanProgress({ done: 0, total: rotationPool.length, found: 0 });
 
         try {
+          // เช็คก่อนเสมอว่าสัปดาห์นี้ (weekKey ปัจจุบัน) เคยสแกนอัตโนมัติจนได้ผลลัพธ์แล้วหรือยัง
+          // (เก็บไว้ใน localStorage) — ถ้าเคยแล้ว ให้ใช้ชุดหุ้นเดิมที่ "ล็อก" ไว้ทันที โดยไม่ไล่สแกน
+          // พูลทั้งหมดซ้ำอีกเลย (สแกนแค่ครั้งเดียวต่อสัปดาห์จริง ๆ ไม่มีปุ่มให้กดสแกนซ้ำเองแล้ว)
+          const locked = await loadStore(WEEKLY_PICKS_STORE_KEY, null);
+          if (locked && locked.weekKey === today.weekKey && Array.isArray(locked.symbols) && locked.symbols.length > 0) {
+            setScanProgress({ done: locked.symbols.length, total: locked.symbols.length, found: locked.symbols.length });
+            await Promise.all(
+              locked.symbols.map((sym) => loadSymbol(sym, true, DEFAULT_TIMEFRAME, { skipFundamentals: true }))
+            );
+            if (fhKey && loadFundamentalsOnly) {
+              await Promise.all(locked.symbols.map((sym) => loadFundamentalsOnly(sym)));
+            }
+            return;
+          }
+
+          setScanProgress({ done: 0, total: rotationPool.length, found: 0 });
+
           let doneCount = 0;
           let foundCount = 0;
           const foundSymbols = [];
@@ -1603,6 +1623,15 @@
           if (fhKey && loadFundamentalsOnly && foundSymbols.length > 0) {
             await Promise.all(foundSymbols.map((sym) => loadFundamentalsOnly(sym)));
           }
+
+          // "ล็อก" ผลสแกนของสัปดาห์นี้ไว้ใน localStorage — ครั้งต่อไปที่เปิดเว็บมาดูหรือสลับแท็บ
+          // (หรือแม้แต่มาเปิดใหม่ทั้งแอปในสัปดาห์เดียวกัน) จะใช้ชุดหุ้นนี้ทันทีโดยไม่สแกนซ้ำ จนกว่า
+          // จะขึ้นสัปดาห์ใหม่ (weekKey เปลี่ยน) ถึงจะสแกนชุดใหม่โดยอัตโนมัติ
+          await saveStore(WEEKLY_PICKS_STORE_KEY, {
+            weekKey: today.weekKey,
+            symbols: foundSymbols,
+            savedAt: Date.now(),
+          });
         } finally {
           setLoading(false);
         }
@@ -1684,21 +1713,14 @@
                 เกณฑ์: คัดกรองจากพูลหุ้นสูงสุด <strong className="text-zinc-200">2,000 ตัวทั่วโลก</strong> (ผสมหุ้นคัดสรร + รายชื่อจริงจากหลายตลาดทั่วโลก) ครอบคลุม{" "}
                 <strong className="text-zinc-200">Small / Mid / Large Cap คละกัน</strong> ทุกภูมิภาค โดยยึดเฉพาะหุ้นที่เป็น{" "}
                 <strong className="text-emerald-400">ขาขึ้น (Uptrend)</strong> และ{" "}
-                <strong className="text-emerald-400">โมเมนตัมบวกแรง (Strong Bullish) เท่านั้น</strong> • เมื่อสแกนเจอผู้เข้าเกณฑ์ครบ {SCAN_BUFFER} ตัว (มากกว่า {WEEKLY_PICK_COUNT} ตัวสุดท้ายเล็กน้อย เผื่อคละ Cap Tier) จะหยุดสแกนทันที • เปลี่ยนชุดสแกนใหม่อัตโนมัติทุกสัปดาห์
+                <strong className="text-emerald-400">โมเมนตัมบวกแรง (Strong Bullish) เท่านั้น</strong> • เมื่อสแกนเจอผู้เข้าเกณฑ์ครบ {SCAN_BUFFER} ตัว (มากกว่า {WEEKLY_PICK_COUNT} ตัวสุดท้ายเล็กน้อย เผื่อคละ Cap Tier) จะหยุดสแกนทันที • สแกนเพียง{" "}
+                <strong className="text-zinc-200">ครั้งเดียวต่อสัปดาห์โดยอัตโนมัติ</strong> แล้วจดจำชุดหุ้นนี้ไว้ ไม่ว่าจะเปิดเว็บใหม่หรือสลับแท็บกี่ครั้งก็ยังเป็นชุดเดิม จนกว่าจะขึ้นสัปดาห์ใหม่ถึงจะสแกนชุดใหม่ให้อัตโนมัติ
               </div>
             </div>
             <div className="flex items-center gap-2">
               <span className="text-xs font-mono bg-zinc-950 border border-zinc-800 text-amber-400 px-3 py-1 rounded-md font-bold">
                 📅 {today.displayDate}
               </span>
-              <button
-                onClick={scanCandidates}
-                disabled={loading || !tdKey}
-                className="flex items-center gap-1.5 text-xs bg-zinc-900 border border-zinc-700 text-zinc-200 hover:bg-zinc-800 px-3 py-1 rounded-md font-medium transition disabled:opacity-50"
-              >
-                <RefreshCw size={13} className={loading ? "animate-spin" : ""} />
-                สแกนค้นหาหุ้นแนะนำ
-              </button>
             </div>
           </div>
 
