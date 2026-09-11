@@ -2134,16 +2134,7 @@
         saveStore("us-dash-portfolio-goals-v1", updatedGoals);
       };
 
-      // ซิงก์ค่าที่แสดงในช่องเป้าหมายรายพอร์ตเมื่อสลับพอร์ต / สลับสกุลเงิน / เรตเปลี่ยน
-      useEffect(() => {
-        const usdVal = portfolioGoals[activePort.id] || 0;
-        if (usdVal > 0) {
-          const displayVal = displayCurrency === "THB" && usdThbRate ? usdVal * usdThbRate : usdVal;
-          setPortGoalInput(displayCurrency === "THB" ? String(Math.round(displayVal)) : displayVal.toFixed(2));
-        } else {
-          setPortGoalInput("");
-        }
-      }, [activePort.id, portfolioGoals, displayCurrency, usdThbRate]);
+      // ซิงก์ค่าที่แสดงในช่องเป้าหมายรายพอร์ตเมื่อสลับพอร์ต / สลับสกุลเงิน / เรตเปลี่ยน (ย้ายไปไว้หลัง activePort ถูกประกาศ ด้านล่าง)
 
       useEffect(() => {
         (async () => {
@@ -2226,6 +2217,17 @@
       const activePort = useMemo(() => {
         return portfolios.find((p) => p.id === activePortId) || portfolios[0] || { id: "def", name: "Default", items: [] };
       }, [portfolios, activePortId]);
+
+      // ซิงก์ค่าที่แสดงในช่องเป้าหมายรายพอร์ตเมื่อสลับพอร์ต / สลับสกุลเงิน / เรตเปลี่ยน
+      useEffect(() => {
+        const usdVal = portfolioGoals[activePort.id] || 0;
+        if (usdVal > 0) {
+          const displayVal = displayCurrency === "THB" && usdThbRate ? usdVal * usdThbRate : usdVal;
+          setPortGoalInput(displayCurrency === "THB" ? String(Math.round(displayVal)) : displayVal.toFixed(2));
+        } else {
+          setPortGoalInput("");
+        }
+      }, [activePort.id, portfolioGoals, displayCurrency, usdThbRate]);
 
       const portfolio = activePort.items || [];
 
