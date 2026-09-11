@@ -1627,7 +1627,7 @@
       );
     }
 
-    function WeeklyRecommendedPanel({ tdKey, fhKey, dataMap, loadSymbol, loadFundamentalsOnly, symbols, onAdd }) {
+    const WeeklyRecommendedPanel = React.memo(function WeeklyRecommendedPanel({ tdKey, fhKey, dataMap, loadSymbol, loadFundamentalsOnly, symbols, onAdd }) {
       const [loading, setLoading] = useState(false);
       const [scanProgress, setScanProgress] = useState({ done: 0, total: 0, found: 0 });
       // Pool เริ่มต้นด้วยลิสต์คัดสรร (TRENDING_UNIVERSE) ใช้งานได้ทันที ระหว่างรอโหลด Pool หุ้นทั่วโลก
@@ -1888,7 +1888,7 @@
           )}
         </div>
       );
-    }
+    });
 
     /* ============================================================
        PRICE CHART
@@ -2033,7 +2033,7 @@
     /* ============================================================
        MULTI-PORTFOLIO VIEW
        ============================================================ */
-    function PortfolioView({ tdKey, geminiKey, dataMap, loadSymbol }) {
+    const PortfolioView = React.memo(function PortfolioView({ tdKey, geminiKey, dataMap, loadSymbol }) {
       const [portfolios, setPortfolios] = useState([]);
       const [activePortId, setActivePortId] = useState("");
       const [newPortName, setNewPortName] = useState("");
@@ -3322,7 +3322,7 @@
           )}
         </div>
       );
-    }
+    });
 
     /* ============================================================
        WATCHLIST POSITION & PROFIT CALCULATOR
@@ -3818,7 +3818,7 @@
     /* ============================================================
        SECTOR ROTATION VIEW
        ============================================================ */
-    function SectorRotationView({ tdKey }) {
+    const SectorRotationView = React.memo(function SectorRotationView({ tdKey }) {
       const [sectorData, setSectorData] = useState([]);
       const [loading, setLoading] = useState(false);
       const [progress, setProgress] = useState(0);
@@ -4203,7 +4203,7 @@
           </div>
         </div>
       );
-    }
+    });
 
     /* ============================================================
        MAIN APP
@@ -4270,7 +4270,7 @@
       useEffect(() => {
         const tick = () => { setTdCallsToday(getTdCallsToday()); setFhCallsToday(getFhCallsToday()); };
         tick();
-        const id = setInterval(tick, 3000);
+        const id = setInterval(tick, 10000);
         return () => clearInterval(id);
       }, []);
 
