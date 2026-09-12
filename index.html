@@ -359,22 +359,20 @@
       return symbol || "";
     }
 
-    // ลำดับความสำคัญของแหล่งโลโก้: เดิมให้บริการที่ "เดาโลโก้จาก ticker symbol เฉยๆ"
-    // (parqet, financialmodelingprep) มาก่อนโลโก้จากโดเมนบริษัทที่เรายืนยันเองใน STOCK_INFO_MAP
-    // ปัญหาคือถ้า ticker เคยถูกใช้โดยบริษัท/กองทุนอื่นมาก่อน (เช่น SPCX เคยเป็น ETF ตัวหนึ่งก่อนจะ
-    // เปลี่ยนเป็น ticker ของ SpaceX) บริการเดาจาก ticker พวกนี้อาจคืนโลโก้ผิดตัวมาแบบโหลดสำเร็จ
-    // (ไม่ error) ทำให้ระบบ fallback ไม่ทำงานต่อ เลยค้างแสดงโลโก้ผิดตลอดไป — ตอนนี้สลับให้:
-    //   1) profileLogo จาก Finnhub (ข้อมูลบริษัทจริงผูกกับ ticker ปัจจุบันเสมอ — เชื่อถือได้สูงสุด)
-    //   2) Clearbit ผ่านโดเมนที่เรายืนยันเองใน STOCK_INFO_MAP (แม่นยำรองลงมา เพราะระบุด้วยมือ)
-    //   3) parqet / financialmodelingprep (เดาจาก ticker — ใช้เป็นตัวเลือกสุดท้ายเท่านั้น)
+    // ลำดับความสำคัญของแหล่งโลโก้ (แก้รอบ 2): พบว่าโลโก้จาก Finnhub เอง (profileLogo) ก็อาจ
+    // ผิด/เก่าได้เช่นกันสำหรับ ticker ที่เพิ่งถูกใช้ซ้ำ (เช่น SPCX ที่เพิ่งเปลี่ยนเจ้าของมาเป็น
+    // SpaceX) เพราะฐานข้อมูลของผู้ให้บริการภายนอกอาจยังอัปเดตไม่ทัน — เดิมให้ profileLogo มาก่อน
+    // Clearbit เสมอ ทำให้ต่อให้เรามีโดเมนที่ถูกต้องอยู่ใน STOCK_INFO_MAP แล้ว โลโก้ผิดจาก Finnhub
+    // ก็ยังโผล่มาก่อนอยู่ดี (โหลดสำเร็จ ไม่ error เลย fallback ไม่ทำงาน) — ตอนนี้ให้ "โดเมนที่เรา
+    // ยืนยันเองใน STOCK_INFO_MAP" ชนะทุกแหล่งเสมอ เพราะเป็นข้อมูลที่ระบุด้วยมือแม่นยำที่สุด แล้ว
+    // ค่อยไล่ profileLogo (Finnhub) → parqet → financialmodelingprep ตามลำดับความน่าเชื่อถือที่ลดลง
     function getLogoUrls(symbol, profileLogo) {
       const list = [];
+      const cleanSym = symbol ? symbol.toUpperCase() : "";
+      const curatedDomain = cleanSym ? STOCK_INFO_MAP[cleanSym]?.domain : null;
+      if (curatedDomain) list.push(`https://logo.clearbit.com/${curatedDomain}`);
       if (profileLogo) list.push(profileLogo);
-      if (symbol) {
-        const cleanSym = symbol.toUpperCase();
-        if (STOCK_INFO_MAP[cleanSym]?.domain) {
-          list.push(`https://logo.clearbit.com/${STOCK_INFO_MAP[cleanSym].domain}`);
-        }
+      if (cleanSym) {
         list.push(`https://assets.parqet.com/logos/symbol/${cleanSym}`);
         list.push(`https://images.financialmodelingprep.com/symbol/${cleanSym}.png`);
       }
