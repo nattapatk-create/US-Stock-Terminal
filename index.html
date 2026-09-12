@@ -292,7 +292,65 @@
       TEVA: { name: "Teva Pharmaceutical Industries (Israel)", domain: "tevapharm.com" },
       SBSW: { name: "Sibanye Stillwater Limited (South Africa)", domain: "sibanyestillwater.com" },
       GFI: { name: "Gold Fields Limited (South Africa)", domain: "goldfields.com" },
-      AU: { name: "AngloGold Ashanti plc (South Africa)", domain: "anglogoldashanti.com" }
+      AU: { name: "AngloGold Ashanti plc (South Africa)", domain: "anglogoldashanti.com" },
+      // เพิ่มเติม: หุ้นที่ถูกใช้อยู่แล้วใน TRENDING_UNIVERSE/พูลหุ้นแนะนำ แต่ขาดหายจาก Map นี้มาก่อน
+      // ทำให้ชื่อหุ้นตกไปโชว์เป็น ticker เฉยๆ (getStockName ไม่มีชื่อให้ fallback) — เติมให้ครบ
+      ABBV: { name: "AbbVie Inc.", domain: "abbvie.com" },
+      ADBE: { name: "Adobe Inc.", domain: "adobe.com" },
+      ADI: { name: "Analog Devices, Inc.", domain: "analog.com" },
+      AMAT: { name: "Applied Materials, Inc.", domain: "appliedmaterials.com" },
+      AMT: { name: "American Tower Corporation", domain: "americantower.com" },
+      BAC: { name: "Bank of America Corporation", domain: "bankofamerica.com" },
+      BLK: { name: "BlackRock, Inc.", domain: "blackrock.com" },
+      CAT: { name: "Caterpillar Inc.", domain: "caterpillar.com" },
+      CMG: { name: "Chipotle Mexican Grill, Inc.", domain: "chipotle.com" },
+      COP: { name: "ConocoPhillips", domain: "conocophillips.com" },
+      COST: { name: "Costco Wholesale Corporation", domain: "costco.com" },
+      CRM: { name: "Salesforce, Inc.", domain: "salesforce.com" },
+      CVX: { name: "Chevron Corporation", domain: "chevron.com" },
+      DDOG: { name: "Datadog, Inc.", domain: "datadoghq.com" },
+      ENTG: { name: "Entegris, Inc.", domain: "entegris.com" },
+      EQIX: { name: "Equinix, Inc.", domain: "equinix.com" },
+      FIX: { name: "Comfort Systems USA, Inc.", domain: "comfortsystemsusa.com" },
+      GE: { name: "GE Aerospace (General Electric)", domain: "ge.com" },
+      GLW: { name: "Corning Incorporated", domain: "corning.com" },
+      GS: { name: "The Goldman Sachs Group, Inc.", domain: "goldmansachs.com" },
+      HD: { name: "The Home Depot, Inc.", domain: "homedepot.com" },
+      HON: { name: "Honeywell International Inc.", domain: "honeywell.com" },
+      INTU: { name: "Intuit Inc.", domain: "intuit.com" },
+      JNJ: { name: "Johnson & Johnson", domain: "jnj.com" },
+      JPM: { name: "JPMorgan Chase & Co.", domain: "jpmorganchase.com" },
+      KLAC: { name: "KLA Corporation", domain: "kla.com" },
+      LIN: { name: "Linde plc", domain: "linde.com" },
+      LITE: { name: "Lumentum Holdings Inc.", domain: "lumentum.com" },
+      LLY: { name: "Eli Lilly and Company", domain: "lilly.com" },
+      LMT: { name: "Lockheed Martin Corporation", domain: "lockheedmartin.com" },
+      LRCX: { name: "Lam Research Corporation", domain: "lamresearch.com" },
+      MA: { name: "Mastercard Incorporated", domain: "mastercard.com" },
+      MCD: { name: "McDonald's Corporation", domain: "mcdonalds.com" },
+      MPWR: { name: "Monolithic Power Systems, Inc.", domain: "monolithicpower.com" },
+      MRK: { name: "Merck & Co., Inc.", domain: "merck.com" },
+      MS: { name: "Morgan Stanley", domain: "morganstanley.com" },
+      NEE: { name: "NextEra Energy, Inc.", domain: "nexteraenergy.com" },
+      NOW: { name: "ServiceNow, Inc.", domain: "servicenow.com" },
+      ON: { name: "ON Semiconductor Corporation (onsemi)", domain: "onsemi.com" },
+      ORCL: { name: "Oracle Corporation", domain: "oracle.com" },
+      PLD: { name: "Prologis, Inc.", domain: "prologis.com" },
+      QCOM: { name: "QUALCOMM Incorporated", domain: "qualcomm.com" },
+      RTX: { name: "RTX Corporation", domain: "rtx.com" },
+      TER: { name: "Teradyne, Inc.", domain: "teradyne.com" },
+      TXN: { name: "Texas Instruments Incorporated", domain: "ti.com" },
+      UNH: { name: "UnitedHealth Group Incorporated", domain: "unitedhealthgroup.com" },
+      V: { name: "Visa Inc.", domain: "visa.com" },
+      WDAY: { name: "Workday, Inc.", domain: "workday.com" },
+      WMT: { name: "Walmart Inc.", domain: "walmart.com" },
+      XOM: { name: "Exxon Mobil Corporation", domain: "exxonmobil.com" },
+      // สองตัวที่ผู้ใช้แจ้งมาโดยตรง: LUNR โชว์ ticker แทนชื่อบริษัท และ SPCX โลโก้ผิด
+      LUNR: { name: "Intuitive Machines, Inc.", domain: "intuitivemachines.com" },
+      // ticker "SPCX" เคยถูกใช้โดย ETF อื่นมาก่อน (เปลี่ยนไปใช้ SPCK เม.ย. 2026) และตอนนี้เป็น
+      // ticker ของ SpaceX เอง (IPO มิ.ย. 2026) — บริการโลโก้แบบเดาจาก ticker (parqet/fmp) อาจยังผูก
+      // โลโก้เก่าหรือผิดตัวไว้ จึงต้องระบุโดเมนจริงตรงนี้เพื่อให้ไปใช้ Clearbit แทน (ดูการแก้ getLogoUrls ด้านล่าง)
+      SPCX: { name: "Space Exploration Technologies Corp. (SpaceX)", domain: "spacex.com" }
     };
 
     function getStockName(symbol, profileName) {
@@ -301,16 +359,24 @@
       return symbol || "";
     }
 
+    // ลำดับความสำคัญของแหล่งโลโก้: เดิมให้บริการที่ "เดาโลโก้จาก ticker symbol เฉยๆ"
+    // (parqet, financialmodelingprep) มาก่อนโลโก้จากโดเมนบริษัทที่เรายืนยันเองใน STOCK_INFO_MAP
+    // ปัญหาคือถ้า ticker เคยถูกใช้โดยบริษัท/กองทุนอื่นมาก่อน (เช่น SPCX เคยเป็น ETF ตัวหนึ่งก่อนจะ
+    // เปลี่ยนเป็น ticker ของ SpaceX) บริการเดาจาก ticker พวกนี้อาจคืนโลโก้ผิดตัวมาแบบโหลดสำเร็จ
+    // (ไม่ error) ทำให้ระบบ fallback ไม่ทำงานต่อ เลยค้างแสดงโลโก้ผิดตลอดไป — ตอนนี้สลับให้:
+    //   1) profileLogo จาก Finnhub (ข้อมูลบริษัทจริงผูกกับ ticker ปัจจุบันเสมอ — เชื่อถือได้สูงสุด)
+    //   2) Clearbit ผ่านโดเมนที่เรายืนยันเองใน STOCK_INFO_MAP (แม่นยำรองลงมา เพราะระบุด้วยมือ)
+    //   3) parqet / financialmodelingprep (เดาจาก ticker — ใช้เป็นตัวเลือกสุดท้ายเท่านั้น)
     function getLogoUrls(symbol, profileLogo) {
       const list = [];
       if (profileLogo) list.push(profileLogo);
       if (symbol) {
         const cleanSym = symbol.toUpperCase();
-        list.push(`https://assets.parqet.com/logos/symbol/${cleanSym}`);
-        list.push(`https://images.financialmodelingprep.com/symbol/${cleanSym}.png`);
         if (STOCK_INFO_MAP[cleanSym]?.domain) {
           list.push(`https://logo.clearbit.com/${STOCK_INFO_MAP[cleanSym].domain}`);
         }
+        list.push(`https://assets.parqet.com/logos/symbol/${cleanSym}`);
+        list.push(`https://images.financialmodelingprep.com/symbol/${cleanSym}.png`);
       }
       return list;
     }
