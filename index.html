@@ -2793,7 +2793,7 @@
 
         appendTxLedgerEntries(ledgerEntries);
         updateActiveItems(updated);
-        if (tdKey) toApply.forEach((row) => loadSymbol(row.symbol.toUpperCase().trim(), false));
+        if (tdKey) toApply.forEach((row) => loadSymbol(row.symbol.toUpperCase().trim(), true));
 
         if (skippedSells.length > 0) {
           alert(`ข้ามรายการขายของ ${skippedSells.join(", ")} เนื่องจากไม่พบหุ้นนี้ในพอร์ต "${activePort.name}"`);
@@ -2846,7 +2846,7 @@
         if (allSymbols.length === 0) return;
 
         setLoadingQuotes(true);
-        await Promise.all(allSymbols.map((s) => loadSymbol(s, false)));
+        await Promise.all(allSymbols.map((s) => loadSymbol(s, true)));
         setLoadingQuotes(false);
       }, [portfolios, tdKey, loadSymbol]);
 
