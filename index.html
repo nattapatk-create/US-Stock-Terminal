@@ -988,8 +988,23 @@
         const bars = data.values.slice().reverse().map((v) => ({
           date: v.datetime, open: +v.open, high: +v.high, low: +v.low, close: +v.close, volume: +v.volume,
         }));
+        // แก้บั๊ก "ราคาล่าสุดไม่โหลด" สำหรับหุ้นที่เพิ่งเข้าตลาดไม่นาน (เช่น SPCX/SpaceX ที่เพิ่ง
+        // IPO มิ.ย. 2026 — ที่ Timeframe รายสัปดาห์ (ค่าเริ่มต้น) จะมีข้อมูลย้อนหลังแค่ ~10 กว่าแท่ง
+        // ยังไม่ถึงเกณฑ์ 20 แท่งที่ต้องใช้คำนวณ EMA/RSI/MACD ให้ครบ) เดิมโค้ดตรงนี้ throw error ทิ้ง
+        // ทั้งเส้นทันทีที่แท่งไม่ครบ ทำให้ loadSymbol() ไม่มีทาง derive "ราคาล่าสุด" (deriveQuoteFromSeries)
+        // ออกมาได้เลยแม้ Twelve Data จะมีแท่งราคาล่าสุดอยู่จริงก็ตาม — ราคาจึงไม่ขึ้นตลอดไปสำหรับหุ้น
+        // กลุ่มนี้ (ไม่ใช่แค่ "โหลดช้า" แต่ "ไม่มีทางโหลดสำเร็จ" เพราะแท่งจะไม่มีวันครบ 20 จนกว่าจะผ่าน
+        // ไปหลายเดือน) แก้โดยคืนแท่งที่มีอยู่กลับไปตามจริงแทนการโยน error ทิ้งทั้งหมด — เฉพาะกรณี
+        // "ไม่มีแท่งเลย" (bars.length === 0) เท่านั้นที่ยังถือเป็น error จริง ๆ ส่วนกรณีมีแท่งแต่ไม่ครบ
+        // 20 ผู้เรียกที่ต้องการ indicator ครบ (เช่น TickerCard.analysis, ตัวสแกนหุ้นแนะนำใน
+        // fetchSeriesBatch) จะเช็ค series.length ของตัวเองอยู่แล้วและซ่อนส่วนที่คำนวณไม่ได้ไปเอง
+        // แต่ deriveQuoteFromSeries ยังคำนวณ "ราคาล่าสุด/เปลี่ยนแปลง%" จากแท่งล่าสุดได้ตามปกติเสมอ
+        if (bars.length === 0) {
+          throw new Error(`ไม่พบข้อมูลราคาย้อนหลังของ ${symbol} ที่ Timeframe นี้ (Twelve Data)`);
+        }
         if (bars.length < MIN_BARS_FOR_FULL_INDICATORS) {
-          throw new Error(`${symbol}: มีข้อมูลย้อนหลังที่ Timeframe นี้แค่ ${bars.length} แท่ง (ต้องการอย่างน้อย ${MIN_BARS_FOR_FULL_INDICATORS} แท่งขึ้นไปจึงจะคำนวณแนวรับ/แนวต้าน/EMA/RSI/MACD ได้)`);
+          // ใส่ flag ไว้เฉย ๆ เผื่อใช้ debug — ไม่กระทบการใช้งานเป็น array ปกติของโค้ดส่วนอื่น
+          bars.insufficientForIndicators = true;
         }
         return bars;
       });
@@ -4321,7 +4336,16 @@
                 </div>
               )}
               {loading && !series && <div className="text-zinc-500 text-sm py-8 text-center">กำลังโหลดข้อมูลกราฟ Timeframe {tfObj.name} จาก Twelve Data…</div>}
-              {!loading && !error && !analysis && (
+              {!loading && !error && !analysis && series && series.length > 0 && (
+                // หุ้นที่เพิ่งเข้าตลาดไม่นาน (เช่น IPO ใหม่) จะมีแท่งราคาไม่ครบ 20 แท่งที่ Timeframe นี้
+                // ราคาล่าสุด/% เปลี่ยนแปลงด้านบนยังแสดงได้ปกติ (มาจากแท่งล่าสุด) เพียงแต่ยังคำนวณ
+                // แนวรับ/แนวต้าน/EMA/RSI/MACD ไม่ได้จนกว่าจะมีข้อมูลย้อนหลังมากพอ
+                <div className="text-zinc-500 text-sm py-8 text-center">
+                  หุ้นนี้มีข้อมูลย้อนหลังที่ Timeframe {tfObj.name} แค่ {series.length} แท่ง (ต้องการอย่างน้อย {MIN_BARS_FOR_FULL_INDICATORS} แท่งขึ้นไป) —
+                  อาจเป็นเพราะเพิ่งเข้าตลาดไม่นาน จึงยังคำนวณกราฟ/แนวรับ-แนวต้าน/EMA/RSI/MACD ไม่ได้ ราคาล่าสุดด้านบนยังถูกต้องตามปกติ
+                </div>
+              )}
+              {!loading && !error && !analysis && (!series || series.length === 0) && (
                 <div className="text-zinc-500 text-sm py-8 text-center">
                   ยังไม่มีข้อมูลกราฟสำหรับ Timeframe {tfObj.name} — กดปุ่ม <RefreshCw size={12} className="inline -mt-0.5" /> เพื่อโหลดใหม่
                 </div>
