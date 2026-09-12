@@ -349,8 +349,12 @@
       LUNR: { name: "Intuitive Machines, Inc.", domain: "intuitivemachines.com" },
       // ticker "SPCX" เคยถูกใช้โดย ETF อื่นมาก่อน (เปลี่ยนไปใช้ SPCK เม.ย. 2026) และตอนนี้เป็น
       // ticker ของ SpaceX เอง (IPO มิ.ย. 2026) — บริการโลโก้แบบเดาจาก ticker (parqet/fmp) อาจยังผูก
-      // โลโก้เก่าหรือผิดตัวไว้ จึงต้องระบุโดเมนจริงตรงนี้เพื่อให้ไปใช้ Clearbit แทน (ดูการแก้ getLogoUrls ด้านล่าง)
-      SPCX: { name: "Space Exploration Technologies Corp. (SpaceX)", domain: "spacex.com" }
+      // โลโก้เก่าหรือผิดตัวไว้ จึงต้องระบุโดเมนจริงตรงนี้เพื่อให้ระบบดึงโลโก้จากโดเมนจริงแทน (ดู getLogoUrls ด้านล่าง)
+      SPCX: { name: "Space Exploration Technologies Corp. (SpaceX)", domain: "spacex.com" },
+      // ผู้ใช้แจ้งว่าหุ้นที่ถือในพอร์ตยังโชว์แค่ ticker เฉยๆ ไม่มีชื่อบริษัท/โลโก้ (ไม่ได้อยู่ใน
+      // TRENDING_UNIVERSE เดิม จึงไม่เคยถูกเติมไว้ในนี้มาก่อน) — เติมให้ตามที่แจ้งมา
+      RDW: { name: "Redwire Corporation", domain: "redwirespace.com" },
+      BE: { name: "Bloom Energy Corporation", domain: "bloomenergy.com" }
     };
 
     function getStockName(symbol, profileName) {
@@ -359,18 +363,22 @@
       return symbol || "";
     }
 
-    // ลำดับความสำคัญของแหล่งโลโก้ (แก้รอบ 2): พบว่าโลโก้จาก Finnhub เอง (profileLogo) ก็อาจ
-    // ผิด/เก่าได้เช่นกันสำหรับ ticker ที่เพิ่งถูกใช้ซ้ำ (เช่น SPCX ที่เพิ่งเปลี่ยนเจ้าของมาเป็น
-    // SpaceX) เพราะฐานข้อมูลของผู้ให้บริการภายนอกอาจยังอัปเดตไม่ทัน — เดิมให้ profileLogo มาก่อน
-    // Clearbit เสมอ ทำให้ต่อให้เรามีโดเมนที่ถูกต้องอยู่ใน STOCK_INFO_MAP แล้ว โลโก้ผิดจาก Finnhub
-    // ก็ยังโผล่มาก่อนอยู่ดี (โหลดสำเร็จ ไม่ error เลย fallback ไม่ทำงาน) — ตอนนี้ให้ "โดเมนที่เรา
-    // ยืนยันเองใน STOCK_INFO_MAP" ชนะทุกแหล่งเสมอ เพราะเป็นข้อมูลที่ระบุด้วยมือแม่นยำที่สุด แล้ว
-    // ค่อยไล่ profileLogo (Finnhub) → parqet → financialmodelingprep ตามลำดับความน่าเชื่อถือที่ลดลง
+    // ลำดับความสำคัญของแหล่งโลโก้ (แก้รอบ 3 — สาเหตุจริงของ "โลโก้ SpaceX ไม่เปลี่ยน"):
+    // รอบก่อนหน้าตั้งใจให้โดเมนที่ยืนยันเองใน STOCK_INFO_MAP (ผ่าน Clearbit) ชนะทุกแหล่งเสมอ แต่
+    // "Clearbit Logo API" (logo.clearbit.com) ถูกปิดถาวรไปแล้วตั้งแต่ 8 ธ.ค. 2025 — คำขอไปยัง
+    // โดเมนนี้จะต่อไม่ติดเลย (ไม่ใช่แค่ตอบโลโก้ผิด) ดังนั้นสำหรับทุก symbol ที่มี curatedDomain
+    // (รวมถึง SPCX/SpaceX) ตัวเลือกแรกในลิสต์จะ error ทันทีเสมอ แล้วค่อยไปเข้าคิว fallback ถัดไป
+    // ซึ่งบางทีก็เป็นโลโก้เก่า/ผิดจากผู้ให้บริการอื่นที่ยังไม่อัปเดต — เข้าใจผิดว่า "โลโก้ยังไม่เปลี่ยน"
+    // ทั้งที่จริง ๆ ตัวที่ควรเปลี่ยน (Clearbit) ใช้งานไม่ได้แล้วตั้งแต่ต้น
+    // แก้โดยเปลี่ยนมาใช้ Google Favicon service แทน Clearbit สำหรับโดเมนที่เรายืนยันเอง — ยังคงเป็น
+    // บริการฟรีไม่ต้องใช้ API key เหมือนเดิม และยังคง "โดเมนที่ตรงกับบริษัทจริง" เป็นแหล่งที่แม่นยำ
+    // ที่สุดเช่นเดิม แล้วค่อยไล่ profileLogo (Finnhub) → parqet → financialmodelingprep ตามลำดับ
+    // ความน่าเชื่อถือที่ลดลง เผื่อ favicon ของบางโดเมนคุณภาพไม่พอ
     function getLogoUrls(symbol, profileLogo) {
       const list = [];
       const cleanSym = symbol ? symbol.toUpperCase() : "";
       const curatedDomain = cleanSym ? STOCK_INFO_MAP[cleanSym]?.domain : null;
-      if (curatedDomain) list.push(`https://logo.clearbit.com/${curatedDomain}`);
+      if (curatedDomain) list.push(`https://www.google.com/s2/favicons?sz=128&domain=${curatedDomain}`);
       if (profileLogo) list.push(profileLogo);
       if (cleanSym) {
         list.push(`https://assets.parqet.com/logos/symbol/${cleanSym}`);
@@ -768,10 +776,10 @@
     function apiCounterKey(provider) {
       return `${provider}-calls-${new Date().toISOString().slice(0, 10)}`;
     }
-    function bumpApiCalls(provider) {
+    function bumpApiCalls(provider, count = 1) {
       try {
         const k = apiCounterKey(provider);
-        const next = (parseInt(localStorage.getItem(k), 10) || 0) + 1;
+        const next = (parseInt(localStorage.getItem(k), 10) || 0) + count;
         localStorage.setItem(k, String(next));
         return next;
       } catch {
@@ -785,7 +793,10 @@
         return 0;
       }
     }
-    function bumpTdCalls() { return bumpApiCalls("td"); }
+    // รองรับ count ได้ (เช่นตอนยิงคำขอเดียวแบบ batch หลายสัญลักษณ์ — 1 HTTP request แต่เสีย
+    // credit เท่าจำนวนสัญลักษณ์ ต้องนับให้ตรงกับที่ Twelve Data คิด credit จริง ไม่งั้นตัวเลข
+    // "ใช้ไปกี่ครั้งวันนี้" ที่โชว์ผู้ใช้จะต่ำกว่าความจริงมาก)
+    function bumpTdCalls(count = 1) { return bumpApiCalls("td", count); }
     function getTdCallsToday() { return getApiCallsToday("td"); }
     function bumpFhCalls() { return bumpApiCalls("fh"); }
     function getFhCallsToday() { return getApiCallsToday("fh"); }
@@ -981,6 +992,63 @@
           throw new Error(`${symbol}: มีข้อมูลย้อนหลังที่ Timeframe นี้แค่ ${bars.length} แท่ง (ต้องการอย่างน้อย ${MIN_BARS_FOR_FULL_INDICATORS} แท่งขึ้นไปจึงจะคำนวณแนวรับ/แนวต้าน/EMA/RSI/MACD ได้)`);
         }
         return bars;
+      });
+    }
+
+    // ============================================================
+    // Batch fetch หลายสัญลักษณ์ในคำขอเดียว (แก้จุดบอด "Sector Rotation โหลดช้า")
+    // ------------------------------------------------------------
+    // เดิม SectorRotationView ยิง fetchSeries() แยกทีละสัญลักษณ์ (SPY + 11 sector ETF = 12 คำขอ)
+    // แม้จะ "ส่งเข้าคิวพร้อมกัน" ด้วย Promise.all แล้ว แต่คิว tdQueue ก็ยังจำกัดจังหวะยิงจริงไว้ที่
+    // ~7.7 วินาที/คำขอบนแพ็กเกจฟรี (ดู tdMinIntervalMs) เพราะแต่ละคำขอนับเป็น "1 คำขอ" แยกกัน ทำให้
+    // สแกน Sector Rotation ทั้งหมดใช้เวลารวม 12 x ~7.7s ≈ 90+ วินาทีขึ้นไปทุกครั้ง
+    // Twelve Data รองรับการระบุหลายสัญลักษณ์คั่นด้วย comma ในพารามิเตอร์ symbol เดียว (เอกสาร
+    // "Batch API requests") ซึ่งนับเป็น "1 คำขอ HTTP" แม้จะเสีย credit ตามจำนวนสัญลักษณ์เท่าเดิม
+    // (ไม่ได้ประหยัด credit แต่ประหยัดเวลาเข้าคิวมหาศาล เพราะคิวเห็นเป็นแค่ 1 รายการ ไม่ใช่ 12
+    // รายการที่ต้องรอเรียงคิวทีละอันเหมือนเดิม) ฟังก์ชันนี้จึงยิงทุกสัญลักษณ์ในคำขอเดียว แล้วแยก
+    // ผลลัพธ์กลับเป็น map ต่อสัญลักษณ์ให้ผู้เรียกใช้ต่อได้เหมือนเดิม
+    async function fetchSeriesBatch(symbols, tdKey, interval = "1week", outputsize = null) {
+      const size = outputsize || OUTPUTSIZE_BY_INTERVAL[interval] || 220;
+      const uniqueSymbols = [...new Set(symbols)];
+      if (uniqueSymbols.length === 0) return {};
+      // คำขอเดี่ยว (1 สัญลักษณ์) Twelve Data จะตอบกลับเป็น {meta, values} ตรง ๆ ไม่ห่อด้วยชื่อ
+      // สัญลักษณ์ — ไม่ต้องใช้ batch ให้ยุ่งยากเกินจำเป็น ใช้ fetchSeries ปกติแทน
+      if (uniqueSymbols.length === 1) {
+        try {
+          return { [uniqueSymbols[0]]: await fetchSeries(uniqueSymbols[0], tdKey, interval, size) };
+        } catch {
+          return { [uniqueSymbols[0]]: null };
+        }
+      }
+      return tdQueue(async () => {
+        // 1 คำขอ HTTP แต่เสีย credit เท่าจำนวนสัญลักษณ์ (ตามเอกสาร Twelve Data Batch requests)
+        bumpTdCalls(uniqueSymbols.length);
+        const symbolParam = uniqueSymbols.map(encodeURIComponent).join(",");
+        let data, res;
+        for (let attempt = 0; attempt < 2; attempt++) {
+          res = await fetch(`${TD_BASE}/time_series?symbol=${symbolParam}&interval=${interval}&outputsize=${size}&apikey=${tdKey}`);
+          data = await res.json();
+          // เมื่อยิงหลายสัญลักษณ์ Twelve Data จะตอบเป็น object คีย์ตามชื่อสัญลักษณ์ แต่ละตัวมี
+          // {meta, values} หรือ {status:"error", ...} แยกกันไป (สัญลักษณ์หนึ่งพังไม่กระทบตัวอื่น)
+          const hasAnyValues = data && typeof data === "object" &&
+            uniqueSymbols.some((s) => data[s]?.values);
+          if (hasAnyValues) break;
+          if (attempt === 0 && isTransientTdError(data, res)) {
+            await new Promise((r) => setTimeout(r, tdMinIntervalMs * 2));
+            continue;
+          }
+          break;
+        }
+        const result = {};
+        for (const s of uniqueSymbols) {
+          const entry = data?.[s];
+          if (!entry || !entry.values) { result[s] = null; continue; }
+          const bars = entry.values.slice().reverse().map((v) => ({
+            date: v.datetime, open: +v.open, high: +v.high, low: +v.low, close: +v.close, volume: +v.volume,
+          }));
+          result[s] = bars.length >= MIN_BARS_FOR_FULL_INDICATORS ? bars : null;
+        }
+        return result;
       });
     }
 
@@ -2468,7 +2536,7 @@
       );
     }
 
-    const PortfolioView = React.memo(function PortfolioView({ tdKey, geminiKey, dataMap, loadSymbol }) {
+    const PortfolioView = React.memo(function PortfolioView({ tdKey, fhKey, geminiKey, dataMap, loadSymbol, refreshQuoteOnly }) {
       const [portfolios, setPortfolios] = useState([]);
       const [activePortId, setActivePortId] = useState("");
       const [newPortName, setNewPortName] = useState("");
@@ -2904,15 +2972,36 @@
         }
       };
 
+      // จุดบอดเดิมของหน้าพอร์ต: ไม่ว่าจะมีกี่หุ้นในพอร์ต (รวมทุกพอร์ตแล้ว unique) โค้ดนี้ยิง
+      // loadSymbol(s, true) "เต็มรูปแบบ" ให้ทุกตัวพร้อมกันผ่าน Promise.all — แต่ loadSymbol เต็มรูปแบบ
+      // จะไปเข้าคิว Twelve Data (tdQueue) ที่จำกัดจังหวะยิงไว้ที่ ~7.7 วินาที/ครั้งบนแพ็กเกจฟรี
+      // (ดู tdMinIntervalMs) เพราะ Promise.all ไม่ได้ทำให้ยิงพร้อมกันจริง แค่ "ส่งเข้าคิวพร้อมกัน"
+      // ทุกตัวก็ยังต้องรอคิวเรียงตามลำดับอยู่ดี ผลคือถ้าพอร์ตมี 10-15 ตัว หน้าพอร์ตจะค้างโหลดราคา
+      // นานเป็นนาที ทั้งที่แอปนี้มีระบบ "จุดสมดุลภาระ Finnhub/Twelve Data" (fetchQuoteBalanced /
+      // refreshQuoteOnly) อยู่แล้วสำหรับหน้า Watchlist (ปุ่ม "อัปเดตทั้งหมด") แต่หน้าพอร์ตไม่เคยถูก
+      // เชื่อมให้ใช้ระบบเดียวกันนี้เลย ตอนนี้ใช้ตรรกะเดียวกับ refreshAll ของ Watchlist:
+      //   - แท่งราคา/อินดิเคเตอร์ของสัญลักษณ์นั้นยังสดอยู่ (ไม่เกิน CACHE_TTL_MS) และมี Finnhub key
+      //     → ใช้ refreshQuoteOnly (ยิง Finnhub /quote เบา ๆ ไม่แตะโควตา/คิว Twelve Data เลย)
+      //   - ไม่งั้น (ยังไม่เคยโหลด หรือแท่งราคาเก่าเกินไป) → ต้องยิง Twelve Data เต็มรูปแบบเหมือนเดิม
+      //     เพราะเป็นจุดเดียวที่ให้ข้อมูลแท่งราคาย้อนหลังได้จริง
       const refreshPortfolioQuotes = useCallback(async () => {
         if (!tdKey) return;
         const allSymbols = [...new Set(portfolios.flatMap((p) => (p.items || []).map((item) => item.symbol)))];
         if (allSymbols.length === 0) return;
 
         setLoadingQuotes(true);
-        await Promise.all(allSymbols.map((s) => loadSymbol(s, true)));
+        const fh = (fhKey || "").trim();
+        await Promise.all(allSymbols.map((s) => {
+          const cached = dataMap[s];
+          const seriesFresh = cached && cached.series && cached.series.length >= 20 &&
+            cached.cachedAt && (Date.now() - cached.cachedAt) < CACHE_TTL_MS;
+          if (fh && seriesFresh && refreshQuoteOnly) {
+            return refreshQuoteOnly(s);
+          }
+          return loadSymbol(s, true);
+        }));
         setLoadingQuotes(false);
-      }, [portfolios, tdKey, loadSymbol]);
+      }, [portfolios, tdKey, fhKey, dataMap, loadSymbol, refreshQuoteOnly]);
 
       useEffect(() => {
         if (portfolios.length > 0 && tdKey) {
@@ -4313,12 +4402,14 @@
       const [sortField, setSortField] = useState("score");
       const [sortAsc, setSortAsc] = useState(false);
 
-      // สแกนเร็วขึ้น: เดิมยิง SPY + 11 sector ETF แบบ "ทีละตัวตามลำดับ" (await ทีละคำขอ) ทำให้
-      // เวลารวมของการสแกน = (จำนวนคำขอ) x (ช่วงเวลาขั้นต่ำต่อคำขอ + เวลาปิ๊งปั๊งเครือข่ายของคำขอนั้น)
-      // ตอนนี้ยิงคำขอทั้งหมดเข้าคิว (tdQueue) พร้อมกันทีเดียวด้วย Promise.allSettled แทน — คิวยังคง
-      // จำกัดอัตราการยิงจริงตาม tdRatePerMin ของผู้ใช้เหมือนเดิมทุกประการ (ไม่มีทางยิงเกินโควตา)
-      // แต่ตัดเวลาปิ๊งปั๊งเครือข่ายที่ต้องรอซ้อนทับกันไปทีละคำขอออก ทำให้สแกนเสร็จเร็วขึ้นชัดเจน
-      // โดยเฉพาะผู้ใช้แพ็กเกจ Twelve Data ที่มีโควตาสูง (rate limit ต่อนาทีมาก ๆ)
+      // สแกนเร็วขึ้น (แก้รอบ 2 — จุดบอดจริงคือ "จำนวนคำขอ" ไม่ใช่แค่การรอซ้อนทับกัน):
+      // รอบก่อนหน้าเปลี่ยนจากยิงทีละตัวเรียงลำดับ มาเป็น "ส่งเข้าคิวพร้อมกันทีเดียว" ด้วย Promise.all
+      // ซึ่งช่วยตัดเวลาปิ๊งปั๊งเครือข่ายที่ซ้อนทับกันได้จริง แต่คิว tdQueue ก็ยังนับ SPY + 11 sector
+      // ETF เป็น "12 คำขอแยกกัน" อยู่ดี และต้องเรียงคิวห่างกันตาม tdMinIntervalMs (~7.7 วินาทีบน
+      // แพ็กเกจฟรี) ทำให้รวมแล้วยังใช้เวลา 12 x ~7.7s ≈ 90+ วินาทีต่อการสแกน 1 ครั้งอยู่ดี
+      // ตอนนี้รวม SPY + sector ETF ทั้งหมดเป็น "คำขอ HTTP เดียว" ผ่าน fetchSeriesBatch (ใช้ฟีเจอร์
+      // batch ของ Twelve Data ที่รับหลายสัญลักษณ์คั่นด้วย comma ในคำขอเดียว) คิวจึงเห็นเป็นแค่ 1
+      // รายการ ไม่ต้องรอเรียงคิว 12 รอบเหมือนเดิม (เสีย credit เท่าเดิมคือ 12 แต่ไม่เสียเวลาเข้าคิว)
       const scanSectors = useCallback(async () => {
         if (!tdKey || !tdKey.trim()) {
           setError("โปรดใส่ Twelve Data API key ในเมนู ⚙ เพื่อเริ่มการสแกนอัตโนมัติ");
@@ -4328,35 +4419,16 @@
         setError(null);
         setProgress(0);
 
-        const totalRequests = SECTOR_ETFS.length + 1; // +1 สำหรับ SPY (benchmark)
-        let doneRequests = 0;
-        const bumpProgress = () => {
-          doneRequests += 1;
-          setProgress(Math.round((doneRequests / totalRequests) * 100));
-        };
-
         try {
-          const spyPromise = fetchSeries("SPY", tdKey, "1week", 70)
-            .then((series) => { bumpProgress(); return series; })
-            .catch((e) => {
-              console.warn("Couldn't fetch SPY, using absolute sector metrics.", e);
-              bumpProgress();
-              return null;
-            });
+          const allSymbols = ["SPY", ...SECTOR_ETFS.map((sec) => sec.symbol)];
+          const seriesMap = await fetchSeriesBatch(allSymbols, tdKey, "1week", 70);
+          setProgress(100);
 
-          const sectorPromises = SECTOR_ETFS.map((sec) =>
-            fetchSeries(sec.symbol, tdKey, "1week", 70)
-              .then((series) => { bumpProgress(); return { sec, series }; })
-              .catch((err) => {
-                console.error(`Failed to fetch ${sec.symbol}`, err);
-                bumpProgress();
-                return { sec, series: null };
-              })
-          );
-
-          // ทุกคำขอถูก "ส่งเข้าคิว" พร้อมกันตั้งแต่ต้น (ไม่รอผลลัพธ์ของตัวก่อนหน้าก่อนส่งตัวถัดไป)
-          // ระบบคิวจะทยอยไล่ยิงตามอัตราที่ตั้งไว้เองโดยอัตโนมัติ
-          const [spySeries, sectorResults] = await Promise.all([spyPromise, Promise.all(sectorPromises)]);
+          const spySeries = seriesMap["SPY"];
+          if (!spySeries) {
+            console.warn("Couldn't fetch SPY, using absolute sector metrics.");
+          }
+          const sectorResults = SECTOR_ETFS.map((sec) => ({ sec, series: seriesMap[sec.symbol] || null }));
 
           const spyReturns = spySeries && spySeries.length >= 20 ? {
             r1w: ((spySeries[spySeries.length - 1].close - spySeries[spySeries.length - 2].close) / spySeries[spySeries.length - 2].close) * 100,
@@ -5186,7 +5258,7 @@
               เวลาสลับแท็บไปมา จึงไม่ต้องโหลด/สแกนข้อมูลซ้ำอีกเลย */}
           <div className="max-w-7xl mx-auto p-4 space-y-4">
             <div className={tab === "portfolio" ? "" : "hidden"}>
-              <PortfolioView tdKey={tdKey} geminiKey={geminiKey} dataMap={dataMap} loadSymbol={loadSymbol} />
+              <PortfolioView tdKey={tdKey} fhKey={fhKey} geminiKey={geminiKey} dataMap={dataMap} loadSymbol={loadSymbol} refreshQuoteOnly={refreshQuoteOnly} />
             </div>
 
             <div className={tab === "watchlist" ? "space-y-4" : "hidden"}>
