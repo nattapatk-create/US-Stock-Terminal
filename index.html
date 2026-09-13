@@ -1343,24 +1343,128 @@
     /* ============================================================
        STOCK UNIVERSE (POOL สำหรับตัวสแกน)
        ------------------------------------------------------------
-       ปรับใหม่ตามโจทย์: ไม่ต้องขยาย Pool เป็นหุ้นทั่วโลกนับพันตัวอีกต่อไป (ตัดการดึงรายชื่อ
-       หุ้นจริงจาก Twelve Data endpoint "/stocks" ที่เคยใช้ผสมเป็น ~2,000 ตัวออกทั้งหมด)
-       เพราะเป้าหมายเปลี่ยนจาก "กระจายให้ครบทุกตลาด/ทุกขนาดกิจการ" มาเป็น "คัดเฉพาะหุ้นที่กำลังจะ
-       เป็นกระแส มีคนพูดถึงมากในวงการนักลงทุน/เทรดเดอร์/VI/สำนักวิเคราะห์/ผู้จัดการกองทุน" แทน
-       ซึ่งเป็นข้อมูลเชิงคุณภาพที่ต้องอาศัยการคัดสรรของคนจริง ไม่ใช่การดึงรายชื่อหุ้นทั้งตลาดมาสุ่ม
-       ดังนั้น Pool ของตัวสแกนตอนนี้ คือ TRENDING_UNIVERSE ด้านล่างนี้เพียงอย่างเดียว — เป็นลิสต์ที่
-       คัดสรรไว้ล่วงหน้า พร้อมเหตุผล/สตอรี่ (catalyst) ของแต่ละตัวว่าทำไมถึงเป็นหุ้นกระแสที่มีคนพูดถึง
-       จากนั้นตัวสแกนจะกรองอีกชั้นด้วยเกณฑ์ทางเทคนิค 2 ข้อ (ดู isSetupEligible ด้านล่าง) เพื่อจับ
-       "จังหวะ" ที่ใกล้จะเป็นขาขึ้นรอบถัดไปจริง ๆ จากหุ้นกระแสกลุ่มนี้
-       หมายเหตุ: แอปนี้ไม่มีการเชื่อมต่อข้อมูลโซเชียล/ข่าว/จำนวนการกล่าวถึงแบบเรียลไทม์ จึงไม่สามารถ
-       วัด "จำนวนผู้กล่าวถึง" เป็นตัวเลขอัตโนมัติได้ — ใช้การคัดสรรลิสต์ (TRENDING_UNIVERSE) แทน และ
-       ควรอัปเดตลิสต์นี้เป็นระยะตามกระแส/ประเด็นการลงทุนที่เปลี่ยนไป
+       ปรับใหม่ตามโจทย์ล่าสุด: ขยาย Pool กลับมาเป็นหุ้นทั่วโลกจำนวนมาก (เป้าหมาย ~4,000 ตัว) เพื่อ
+       เพิ่มโอกาสเจอหุ้นที่เข้าเกณฑ์โมเมนตัม+กระแสพูดถึงให้กว้างกว่าลิสต์คัดสรรอย่างเดียว
+       Pool ของตัวสแกนตอนนี้ = TRENDING_UNIVERSE (ลิสต์คัดสรรไว้ล่วงหน้า พร้อมเหตุผล/สตอรี่
+       (catalyst) ของแต่ละตัว) รวมกับหุ้นสามัญ (Common Stock) ทั่วโลกอีกก้อนใหญ่ที่ดึงมาจาก
+       Twelve Data endpoint "/stocks" (ดู fetchGlobalStockUniverse ด้านล่าง) รวมกันสูงสุด
+       GLOBAL_UNIVERSE_TARGET_SIZE ตัว โดยเลือกแบบ round-robin ตามประเทศ (ดู buildDiverseUniverse)
+       เพื่อกันไม่ให้ตลาดเดียว (โดยเฉพาะสหรัฐฯ ที่มีจำนวนหุ้นเยอะสุด) ยึดพูลเกินสัดส่วนที่ตั้งไว้
+       รายชื่อที่ดึงมาจะถูกแคชไว้ใน localStorage หลายวัน (ดู STOCK_UNIVERSE_TTL_MS) เพราะรายชื่อ
+       หุ้นในตลาดเปลี่ยนไม่บ่อย ไม่ต้องดึงใหม่ทุกครั้งที่เปิดเว็บ
+       หากดึงรายชื่อทั่วโลกไม่สำเร็จ (ไม่มี Twelve Data API Key หรือเครือข่ายมีปัญหา) ระบบจะ
+       "fail-open" กลับไปใช้แค่ TRENDING_UNIVERSE ไปก่อน เพื่อไม่ให้ทั้งฟีเจอร์หุ้นแนะนำใช้งานไม่ได้
+       เลยเพียงเพราะพูลส่วนขยายนี้โหลดไม่สำเร็จชั่วคราว
+       จากนั้นตัวสแกนจะกรองอีกชั้นด้วยเกณฑ์คัดเลือกสุดท้าย 2 ข้อ (ดู isSetupEligible/isBuzzEligible
+       ด้านล่าง): โมเมนตัมบวก-บวกแรง + กระแสพูดถึงสูงในวงการนักลงทุน-เทรดเดอร์ (StockTwits)
        ============================================================ */
 
     function pick(obj, keys) {
       if (!obj) return null;
       for (const k of keys) if (obj[k] != null && !Number.isNaN(obj[k])) return obj[k];
       return null;
+    }
+
+    /* ---------------- Global stock universe fetch (Twelve Data /stocks) ---------------- */
+    const GLOBAL_UNIVERSE_TARGET_SIZE = 4000; // ขนาดพูลหุ้นทั่วโลกสูงสุดที่ต้องการ (รวม TRENDING_UNIVERSE แล้ว)
+    const STOCK_UNIVERSE_CACHE_KEY = "us-dash-stock-universe-v1";
+    const STOCK_UNIVERSE_TTL_MS = 3 * 24 * 60 * 60 * 1000; // แคชรายชื่อหุ้นทั่วโลกไว้ 3 วัน (รายชื่อเปลี่ยนไม่บ่อย)
+    const MAX_UNIVERSE_COUNTRY_RATIO = 0.35; // กันไม่ให้ตลาดเดียว (เช่น สหรัฐฯ) ยึดพูลเกิน 35% ของทั้งหมด
+    const TICKER_SYMBOL_RE = /^[A-Z][A-Z0-9.\-]{0,9}$/; // ตัด ticker ที่หน้าตาผิดปกติ (มีช่องว่าง/สัญลักษณ์แปลก ๆ) ทิ้ง
+
+    function readUniverseCache() {
+      try {
+        const raw = localStorage.getItem(STOCK_UNIVERSE_CACHE_KEY);
+        if (!raw) return null;
+        const parsed = JSON.parse(raw);
+        if (!parsed || !Array.isArray(parsed.items) || !parsed.fetchedAt) return null;
+        if (Date.now() - parsed.fetchedAt > STOCK_UNIVERSE_TTL_MS) return null;
+        return parsed.items;
+      } catch {
+        return null;
+      }
+    }
+    function writeUniverseCache(items) {
+      try {
+        localStorage.setItem(STOCK_UNIVERSE_CACHE_KEY, JSON.stringify({ items, fetchedAt: Date.now() }));
+      } catch (e) {
+        console.error("stock universe cache save failed", e);
+      }
+    }
+
+    // เลือกหุ้นจากรายชื่อหุ้นสามัญ (Common Stock) ทั่วโลกที่ Twelve Data ให้มา แบบ round-robin
+    // ไล่ตามประเทศทีละตัว (ไม่ใช่ไล่ทีละประเทศจนหมดแล้วค่อยไปประเทศถัดไป) พร้อมกำหนดเพดานสูงสุด
+    // ต่อประเทศ (MAX_UNIVERSE_COUNTRY_RATIO) เพื่อให้พูลสุดท้ายกระจายตัวทั่วโลกจริง ๆ แทนที่จะเป็น
+    // หุ้นสหรัฐฯ ล้วนเพราะมีจำนวนในฐานข้อมูลเยอะที่สุด
+    function buildDiverseUniverse(rawList, targetSize) {
+      const byCountry = new Map();
+      for (const raw of rawList) {
+        const symbol = String(raw?.symbol || "").trim().toUpperCase();
+        const country = raw?.country || null;
+        if (!symbol || !country || !TICKER_SYMBOL_RE.test(symbol)) continue;
+        if (!byCountry.has(country)) byCountry.set(country, []);
+        byCountry.get(country).push({
+          symbol,
+          country,
+          sector: null,
+          catalyst: null,
+          name: raw.instrument_name || raw.name || null,
+        });
+      }
+      const countries = Array.from(byCountry.keys());
+      const perCountryCap = Math.max(1, Math.floor(targetSize * MAX_UNIVERSE_COUNTRY_RATIO));
+      const pointers = Object.fromEntries(countries.map((c) => [c, 0]));
+      const countPerCountry = Object.fromEntries(countries.map((c) => [c, 0]));
+      const seen = new Set();
+      const result = [];
+      let addedThisRound = true;
+      while (addedThisRound && result.length < targetSize) {
+        addedThisRound = false;
+        for (const c of countries) {
+          if (result.length >= targetSize) break;
+          const arr = byCountry.get(c);
+          const p = pointers[c];
+          if (p >= arr.length || countPerCountry[c] >= perCountryCap) continue;
+          const item = arr[p];
+          pointers[c] = p + 1;
+          addedThisRound = true;
+          if (seen.has(item.symbol)) continue;
+          seen.add(item.symbol);
+          countPerCountry[c] += 1;
+          result.push(item);
+        }
+      }
+      return result;
+    }
+
+    // ดึงรายชื่อหุ้นสามัญ (Common Stock) ทั่วโลกจาก Twelve Data (ฟรี ไม่เสียโควตาแยกจาก quote/candle
+    // เพราะเป็น endpoint รายชื่อหุ้น ไม่ใช่ราคา) แล้วคัดให้เหลือพูลที่กระจายตัวทั่วโลกตามเป้าหมาย
+    // ใช้แคชใน localStorage ก่อนเสมอ (อายุ STOCK_UNIVERSE_TTL_MS) เพื่อลดจำนวนครั้งที่ต้องเรียกจริง
+    // ถ้าไม่มี Twelve Data API Key หรือเรียกไม่สำเร็จ จะคืนค่า null (fail-open — ผู้เรียกจะ fallback
+    // ไปใช้แค่ TRENDING_UNIVERSE แทน)
+    async function fetchGlobalStockUniverse(tdKey) {
+      const cached = readUniverseCache();
+      if (cached && cached.length > 0) return cached;
+      if (!tdKey) return null;
+      try {
+        const res = await tdQueue(() =>
+          fetch(`${TD_BASE}/stocks?type=Common%20Stock&apikey=${encodeURIComponent(tdKey)}`)
+        );
+        if (!res.ok) throw new Error(`Twelve Data /stocks HTTP ${res.status}`);
+        const data = await res.json();
+        const rawList = Array.isArray(data?.data) ? data.data : [];
+        if (rawList.length === 0) throw new Error("Twelve Data /stocks คืนรายชื่อว่างเปล่า");
+        const diverse = buildDiverseUniverse(rawList, GLOBAL_UNIVERSE_TARGET_SIZE);
+        if (diverse.length === 0) throw new Error("ไม่มีหุ้นที่ผ่านการกรองความถูกต้องของ ticker เลย");
+        writeUniverseCache(diverse);
+        return diverse;
+      } catch (e) {
+        console.error(
+          "[Universe] ดึงรายชื่อหุ้นทั่วโลกจาก Twelve Data ไม่สำเร็จ — ใช้ TRENDING_UNIVERSE (คัดสรรไว้ล่วงหน้า) ไปก่อน",
+          e
+        );
+        return null;
+      }
     }
 
     /* ============================================================
@@ -1676,32 +1780,27 @@
     // อัปเดตเวอร์ชันคีย์เป็น v4 เพื่อล้างผลสแกนสัปดาห์เก่าที่คัดมาก่อนปรับเกณฑ์ (ตัดเกณฑ์แนวรับออก
     // และเปลี่ยนเกณฑ์กระแสการพูดถึงจากจำนวนผู้ติดตามเป็นจำนวนแหล่งที่กล่าวถึง) ทิ้งไปโดยอัตโนมัติ —
     // บังคับให้สแกนใหม่ทั้งพูลด้วยเกณฑ์ 3 ข้อล่าสุดในครั้งถัดไป
-    const WEEKLY_PICKS_STORE_KEY = "us-dash-weekly-picks-v4";
+    const WEEKLY_PICKS_STORE_KEY = "us-dash-weekly-picks-v5";
 
-    // เกณฑ์การคัดกรองหุ้นแนะนำ — เลือกจากหุ้นกระแส (TRENDING_UNIVERSE) ที่กำลังจะเป็นเทรนด์ขาขึ้น
-    // รอบถัดไป โดยต้องเข้าเกณฑ์เชิงเทคนิคครบ 2 องค์ประกอบร่วมกัน (ดูใน isSetupEligible):
-    //   1) มีเงินทุนจากรายใหญ่ไหลเข้าอย่างต่อเนื่อง (CMF เป็นบวกและมีแนวโน้มเพิ่มขึ้น)
-    //   2) โมเมนตัมบวกแรง (RSI/MACD) พร้อมจะเป็นเทรนด์ขาขึ้นรอบถัดไป (ไม่จำเป็นต้องเป็น Uptrend
-    //      เต็มตัวแล้ว แค่ต้องไม่ใช่ขาลงที่ยังอยู่ในทิศทางลบชัดเจน)
-    // บวกเกณฑ์ที่ 3 (ดูใน isBuzzEligible ด้านบน): ต้องเป็นหุ้นที่ "ถูกกล่าวถึงในวงการนักลงทุน-
-    // เทรดเดอร์" จริง โดยเชื่อมต่อข้อมูลสดจาก StockTwits (public API ฟรี 100% ไม่ใช้คีย์) — นับจาก
-    // จำนวนแหล่ง/ข้อความที่กล่าวถึงมากกว่า MIN_ST_MENTIONS แหล่ง ไม่ใช้จำนวนผู้ติดตามอีกต่อไป
-    const MIN_CMF_INFLOW = 0.03;       // CMF ต้องเป็นบวกพอสมควร ไม่ใช่บวกจาง ๆ ใกล้ศูนย์
+    // เกณฑ์การคัดกรองหุ้นแนะนำสุดท้าย — เลือกจากพูลหุ้นทั่วโลก (ดูหัวข้อ STOCK UNIVERSE ด้านบน)
+    // โดยต้องเข้าเกณฑ์ครบ 2 ข้อร่วมกัน:
+    //   1) โมเมนตัมบวก-บวกแรง (ดูใน isSetupEligible) ส่งสัญญาณว่ากำลังจะเป็นเทรนด์ขาขึ้นในรอบถัดไป
+    //      (ไม่จำเป็นต้องเป็น Uptrend เต็มตัวแล้ว แค่ต้องไม่ใช่ขาลงที่ยังอยู่ในทิศทางลบชัดเจน)
+    //   2) มีผู้กล่าวถึง/ติดตามมากในวงการนักลงทุน-เทรดเดอร์จริง (ดูใน isBuzzEligible ด้านบน) โดย
+    //      เชื่อมต่อข้อมูลสดจาก StockTwits (public API ฟรี 100% ไม่ใช้คีย์) — นับจากจำนวนแหล่ง/
+    //      ข้อความที่กล่าวถึงมากกว่า MIN_ST_MENTIONS แหล่ง
 
     function isSetupEligible(cls) {
       if (!cls) return false;
 
-      const bigMoneyInflowing =
-        cls.cmf != null && cls.cmf > MIN_CMF_INFLOW && cls.cmfRising;
+      // โมเมนตัมบวก หรือ บวกแรง ถือว่าเข้าเกณฑ์ (ไม่บังคับต้องเป็น "บวกแรง" เท่านั้นเหมือนเดิม)
+      const positiveMomentum = cls.momentum === "Strong Bullish" || cls.momentum === "Bullish";
 
-      const strongPositiveMomentum = cls.momentum === "Strong Bullish";
-
-      // ไม่เอาหุ้นที่ยังอยู่ในขาลงชัดเจน (เทรนด์ลงและ EMA เรียงตัวลงชัด) แม้จะมีโมเมนตัม/เงินทุน
-      // เข้าเกณฑ์ก็ตาม — ที่เหลือ (Sideways หรือ Uptrend ที่เพิ่งเริ่ม) ถือว่า "กำลังจะเป็นขาขึ้น
-      // รอบถัดไป" ได้
+      // ไม่เอาหุ้นที่ยังอยู่ในขาลงชัดเจน (เทรนด์ลงและ EMA เรียงตัวลงชัด) แม้จะมีโมเมนตัมเข้าเกณฑ์
+      // ก็ตาม — ที่เหลือ (Sideways หรือ Uptrend ที่เพิ่งเริ่ม) ถือว่า "กำลังจะเป็นขาขึ้นรอบถัดไป" ได้
       const notDeepDowntrend = !(cls.trend === "Downtrend" && cls.trendScore <= -2);
 
-      return bigMoneyInflowing && strongPositiveMomentum && notDeepDowntrend;
+      return positiveMomentum && notDeepDowntrend;
     }
 
     function getCapTier(mktCapB) {
@@ -1776,14 +1875,6 @@
                   {CAP_TIER_TH[rec.capTier]}
                 </span>
               )}
-              {rec.cls.cmf != null && rec.cls.cmf > MIN_CMF_INFLOW && rec.cls.cmfRising && (
-                <span
-                  title="เงินทุนจากรายใหญ่ไหลเข้าต่อเนื่อง (Chaikin Money Flow เป็นบวกและเพิ่มขึ้น)"
-                  className="text-[9px] font-bold px-1.5 py-0.5 rounded border text-cyan-300 bg-cyan-500/10 border-cyan-500/30"
-                >
-                  💰 เงินทุนไหลเข้า
-                </span>
-              )}
               {rec.buzz && rec.buzz.ok && (
                 <span
                   title={`มีการกล่าวถึงบน StockTwits ${rec.buzz.messageCount.toLocaleString()} แหล่ง — เป็นที่พูดถึงมากในวงการนักลงทุน-เทรดเดอร์`}
@@ -1801,7 +1892,7 @@
 
             <div className="bg-zinc-950/80 border border-zinc-800/80 rounded-lg p-2.5 text-[10px] text-zinc-300 min-h-[54px]">
               <div className="text-amber-400 font-bold mb-0.5 flex items-center gap-1">💡 Catalyst</div>
-              <div className="line-clamp-3">{rec.catalyst}</div>
+              <div className="line-clamp-3">{rec.catalyst || "หุ้นจากพูลหุ้นทั่วโลก ผ่านเกณฑ์โมเมนตัมและกระแสการพูดถึงในสัปดาห์นี้"}</div>
             </div>
           </div>
 
@@ -1905,16 +1996,46 @@
       const [loading, setLoading] = useState(false);
       const [scanProgress, setScanProgress] = useState({ done: 0, total: 0, found: 0 });
       // buzzMap เก็บผลลัพธ์ "กระแสการพูดถึง" จาก StockTwits ต่อ symbol ({ ok, watchlistCount,
-      // messageCount }) เพื่อใช้ทั้งกรองเกณฑ์ที่ 4 และแสดงป้ายบนการ์ดหุ้นแนะนำ
+      // messageCount }) เพื่อใช้ทั้งกรองเกณฑ์ที่ 2 (กระแสการพูดถึง) และแสดงป้ายบนการ์ดหุ้นแนะนำ
       const [buzzMap, setBuzzMap] = useState({});
       // ถ้า StockTwits ใช้งานไม่ได้ต่อเนื่องจนถูกปิดเกณฑ์ชั่วคราว (ดู fetchStockTwitsBuzz) จะแจ้ง
-      // ผู้ใช้ตรงนี้ว่าเกณฑ์ข้อ 4 กำลัง fail-open อยู่ (ยังคงเกณฑ์เทคนิค 3 ข้อเดิมครบ)
+      // ผู้ใช้ตรงนี้ว่าเกณฑ์กระแสการพูดถึงกำลัง fail-open อยู่ (ยังคงเกณฑ์โมเมนตัมเดิมครบ)
       const [buzzUnavailable, setBuzzUnavailable] = useState(false);
-      // Pool ตอนนี้คือลิสต์คัดสรร (TRENDING_UNIVERSE) เพียงอย่างเดียว — หุ้นกระแสที่มีสตอรี่/เป็นที่
-      // พูดถึงมากในวงการนักลงทุน เทรดเดอร์ VI สำนักวิเคราะห์ และผู้จัดการกองทุน ไม่ต้องไล่ดึง Pool
-      // หุ้นทั่วโลกนับพันตัวจาก API แล้ว (พร้อมใช้งานได้ทันที ไม่ต้องรอโหลด)
-      const universe = TRENDING_UNIVERSE;
-      const universeReady = true;
+
+      // พูลหุ้นสำหรับสแกน = หุ้นกระแสที่คัดสรรไว้ล่วงหน้า (TRENDING_UNIVERSE พร้อมสตอรี่/catalyst)
+      // รวมกับหุ้นสามัญทั่วโลกอีกก้อนใหญ่ที่ดึงมาจาก Twelve Data (ดู fetchGlobalStockUniverse
+      // ด้านบน) รวมกันสูงสุด ~GLOBAL_UNIVERSE_TARGET_SIZE ตัว เพื่อขยายโอกาสเจอหุ้นที่เข้าเกณฑ์
+      // โมเมนตัม+กระแสพูดถึงให้กว้างกว่าลิสต์คัดสรรอย่างเดียว — ระหว่างที่ยังดึงไม่เสร็จ (หรือดึง
+      // ไม่สำเร็จ) จะยังไม่เริ่มสแกนจนกว่า universeReady จะเป็น true (ดู effect ด้านล่าง) เพื่อกัน
+      // ไม่ให้สแกนซ้ำสองรอบด้วยพูลคนละขนาดกัน
+      const [globalUniverse, setGlobalUniverse] = useState(null);
+      const [universeReady, setUniverseReady] = useState(false);
+
+      useEffect(() => {
+        let cancelled = false;
+        setUniverseReady(false);
+        fetchGlobalStockUniverse(tdKey).then((items) => {
+          if (cancelled) return;
+          setGlobalUniverse(items);
+          setUniverseReady(true);
+        });
+        return () => {
+          cancelled = true;
+        };
+      }, [tdKey]);
+
+      const universe = useMemo(() => {
+        if (!globalUniverse || globalUniverse.length === 0) return TRENDING_UNIVERSE;
+        const seen = new Set(TRENDING_UNIVERSE.map((it) => it.symbol));
+        const merged = [...TRENDING_UNIVERSE];
+        for (const item of globalUniverse) {
+          if (merged.length >= GLOBAL_UNIVERSE_TARGET_SIZE) break;
+          if (seen.has(item.symbol)) continue;
+          seen.add(item.symbol);
+          merged.push(item);
+        }
+        return merged;
+      }, [globalUniverse]);
 
       const today = useMemo(() => {
         const d = new Date();
@@ -1953,7 +2074,7 @@
               await Promise.all(locked.symbols.map((sym) => loadFundamentalsOnly(sym)));
             }
             // ดึงข้อมูล "กระแสการพูดถึง" จาก StockTwits ของชุดหุ้นที่ล็อกไว้แล้วมาแสดงเป็นป้ายบน
-            // การ์ด (ไม่ต้องกรองซ้ำ เพราะสัปดาห์นี้ผ่านเกณฑ์ทั้ง 4 ข้อไปแล้วตอนสแกนครั้งแรก)
+            // การ์ด (ไม่ต้องกรองซ้ำ เพราะสัปดาห์นี้ผ่านเกณฑ์ทั้ง 2 ข้อไปแล้วตอนสแกนครั้งแรก)
             const buzzEntries = await Promise.all(
               locked.symbols.map(async (sym) => [sym, await fetchStockTwitsBuzz(sym)])
             );
@@ -1970,7 +2091,7 @@
           const buzzResults = {}; // สะสมผลลัพธ์ StockTwits ของทุกตัวที่เช็กระหว่างสแกนรอบนี้
 
           // รอบที่ 1: เช็คเฉพาะหุ้นที่มีข้อมูล (series) แคชสดอยู่ในเครื่องแล้ว — ไม่ต้องยิง API เลย
-          // (เฉพาะตัวที่ผ่านเกณฑ์เทคนิค 3 ข้อก่อน ถึงจะเรียก StockTwits ต่อเพื่อเช็กเกณฑ์ข้อ 4
+          // (เฉพาะตัวที่ผ่านเกณฑ์โมเมนตัมก่อน ถึงจะเรียก StockTwits ต่อเพื่อเช็กเกณฑ์กระแสพูดถึง
           // เป็นการประหยัดโควตา/รอบเรียก API ฟรีนี้ ไม่ต้องยิงให้ทุกตัวในพูล)
           for (const item of rotationPool) {
             const cached = dataMap[item.symbol];
@@ -2055,6 +2176,10 @@
       }, [tdKey, fhKey, today, loadSymbol, loadFundamentalsOnly, dataMap]);
 
       useEffect(() => {
+        // รอให้พูลหุ้นทั่วโลก (ดู fetchGlobalStockUniverse) โหลดเสร็จก่อนเสมอ (หรือ fail-open
+        // กลับไปใช้ TRENDING_UNIVERSE ถ้าโหลดไม่สำเร็จ) ก่อนเริ่มสแกน — กันไม่ให้สแกนซ้ำสองรอบ
+        // ด้วยพูลคนละขนาดกัน (รอบแรกจากพูลเล็กแล้วรอบสองจากพูลใหญ่ที่โหลดมาทีหลัง)
+        if (!universeReady) return;
         scanCandidates();
         // eslint-disable-next-line react-hooks/exhaustive-deps
       }, [today.weekKey, tdKey, fhKey, universeReady]);
@@ -2083,21 +2208,21 @@
           });
         }
 
-        // เรียงตามความแข็งแรงของสัญญาณรวม 3 ด้าน: แรงเงินทุนไหลเข้า (CMF ยิ่งสูงยิ่งดี) + โมเมนตัม
-        // RSI/Trend (ยิ่งบวกแรงยิ่งดี) + กระแสการพูดถึงบน StockTwits (ยิ่งมีคนพูดถึง/กล่าวถึงจาก
-        // หลายแหล่งยิ่งได้คะแนนเสริม แต่มีน้ำหนักน้อยกว่าสัญญาณเทคนิค เพื่อไม่ให้หุ้นดังล้วน ๆ แต่
-        // สัญญาณเทคนิคอ่อนแซงหน้าหุ้นที่ตั้งค่าเทคนิคแข็งแกร่งกว่าไปได้ — ใช้ log ฐาน 10 บีบสเกล
-        // ตัวเลขจำนวนข้อความที่ห่างกันมากให้เทียบกันได้)
+        // เรียงตามความแข็งแรงของสัญญาณรวม 2 ด้าน: โมเมนตัม RSI/Trend (ยิ่งบวกแรงยิ่งดี ให้คะแนน
+        // เสริมพิเศษถ้าเป็น "Strong Bullish" มากกว่า "Bullish" ธรรมดา) + กระแสการพูดถึงบน StockTwits
+        // (ยิ่งมีคนพูดถึง/กล่าวถึงจากหลายแหล่งยิ่งได้คะแนนเสริม แต่มีน้ำหนักน้อยกว่าสัญญาณโมเมนตัม
+        // เพื่อไม่ให้หุ้นดังล้วน ๆ แต่โมเมนตัมอ่อนแซงหน้าหุ้นที่โมเมนตัมแข็งแกร่งกว่าไปได้ — ใช้ log
+        // ฐาน 10 บีบสเกลตัวเลขจำนวนข้อความที่ห่างกันมากให้เทียบกันได้)
         const strength = (c) => {
           const cls = c.cls;
-          const inflowScore = (cls.cmf || 0) * 3;
-          const momentumScore = cls.trendScore + (cls.rsi || 0) / 100;
+          const momentumTierBonus = cls.momentum === "Strong Bullish" ? 1 : cls.momentum === "Bullish" ? 0.3 : 0;
+          const momentumScore = cls.trendScore + (cls.rsi || 0) / 100 + momentumTierBonus;
           const buzzScore = c.buzz && c.buzz.ok ? Math.log10(1 + c.buzz.messageCount) / 2 : 0;
-          return inflowScore + momentumScore + buzzScore;
+          return momentumScore + buzzScore;
         };
         // คัดหุ้นแนะนำสุดท้ายด้วยการเรียงตามความแข็งแรงของสัญญาณล้วน ๆ (ไม่บังคับคละ Cap Tier /
-        // ภูมิภาค / อุตสาหกรรมอีกต่อไป) — หุ้นที่สัญญาณ "เงินทุนไหลเข้า + โมเมนตัมแรง + กระแส
-        // การพูดถึงสูง" แข็งแกร่งที่สุดในหุ้นกระแสกลุ่ม TRENDING_UNIVERSE จะถูกเลือกก่อนเสมอ
+        // ภูมิภาค / อุตสาหกรรมอีกต่อไป) — หุ้นที่สัญญาณ "โมเมนตัมบวก-บวกแรง + กระแสการพูดถึงสูง"
+        // แข็งแกร่งที่สุดในพูลหุ้นทั่วโลกจะถูกเลือกก่อนเสมอ
         candidates.sort((a, b) => strength(b) - strength(a));
         return candidates.slice(0, WEEKLY_PICK_COUNT);
       }, [today, dataMap, buzzMap]);
@@ -2111,7 +2236,7 @@
                 <span>หุ้นแนะนำประจำสัปดาห์ 🔥 หุ้นกระแส ({WEEKLY_PICK_COUNT} ตัว)</span>
               </div>
               <div className="text-xs text-zinc-400 mt-0.5">
-                เกณฑ์: เงินทุนไหลเข้าต่อเนื่อง + โมเมนตัมบวกแรง + กระแสพูดถึงสูงบน{" "}
+                เกณฑ์: โมเมนตัมบวก-บวกแรง + กระแสพูดถึงสูงบน{" "}
                 <a href="https://stocktwits.com" target="_blank" rel="noopener noreferrer" className="underline hover:text-pink-300">StockTwits</a>
               </div>
             </div>
@@ -2135,7 +2260,7 @@
             <div className="bg-zinc-800/60 border border-zinc-700 rounded-lg p-2.5 text-[11px] text-zinc-400 flex items-start gap-2">
               <span>ℹ️</span>
               <span>
-                เชื่อมต่อ StockTwits เพื่อเช็กกระแสการพูดถึงไม่สำเร็จในตอนนี้ (อาจเป็นเพราะเครือข่ายหรือ CORS) — ระบบจึงข้ามเกณฑ์กระแสการพูดถึงชั่วคราวในเซสชันนี้ และยังคงใช้เกณฑ์ทางเทคนิค 2 ข้อเดิมครบ
+                เชื่อมต่อ StockTwits เพื่อเช็กกระแสการพูดถึงไม่สำเร็จในตอนนี้ (อาจเป็นเพราะเครือข่ายหรือ CORS) — ระบบจึงข้ามเกณฑ์กระแสการพูดถึงชั่วคราวในเซสชันนี้ และยังคงใช้เกณฑ์โมเมนตัมเดิมครบ
               </span>
             </div>
           )}
@@ -2149,7 +2274,7 @@
           {!loading && recommended.length === 0 && (
             <div className="text-xs text-zinc-500 text-center py-6">
               {tdKey
-                ? "ยังไม่พบหุ้นที่ตรงเกณฑ์ เงินทุนไหลเข้าต่อเนื่อง + โมเมนตัมบวกแรง + กระแสพูดถึงสูง ในสัปดาห์นี้"
+                ? "ยังไม่พบหุ้นที่ตรงเกณฑ์ โมเมนตัมบวก-บวกแรง + กระแสพูดถึงสูง ในสัปดาห์นี้"
                 : "กรุณาตั้งค่า Twelve Data API Key เพื่อเริ่มใช้งานหุ้นแนะนำประจำสัปดาห์"}
             </div>
           )}
