@@ -607,12 +607,12 @@
     // หมายเหตุสำคัญ: นี่เป็น public API ที่ไม่มีเอกสารทางการ ไม่มี SLA และไม่ต้องใช้คีย์ จึงอาจโดน
     // จำกัดอัตราเรียก (rate limit) หรือถูกเบราว์เซอร์บล็อกด้วย CORS ได้ในบางเครือข่าย — โค้ดนี้ออกแบบ
     // ให้ "fail-open" เสมอ: ถ้าเรียกไม่สำเร็จติดต่อกันหลายครั้ง จะปิดการบังคับใช้เกณฑ์นี้ชั่วคราวใน
-    // เซสชันนั้น ๆ (ยังคงเกณฑ์ทางเทคนิค 3 ข้อเดิมไว้ครบ) เพื่อไม่ให้ทั้งระบบหุ้นแนะนำล่มหรือไม่พบหุ้น
+    // เซสชันนั้น ๆ (ยังคงเกณฑ์ทางเทคนิค 2 ข้อเดิมไว้ครบ) เพื่อไม่ให้ทั้งระบบหุ้นแนะนำล่มหรือไม่พบหุ้น
     // เลยเพียงเพราะแหล่งข้อมูลเสริมนี้ใช้งานไม่ได้ชั่วคราว
     const ST_BUZZ_CACHE_KEY = "us-dash-stocktwits-buzz-v1";
     const ST_BUZZ_TTL_MS = 3 * 60 * 60 * 1000; // แคชผลไว้ 3 ชม./ตัว ลดจำนวนการยิง API ซ้ำ
     const ST_BUZZ_FAIL_LIMIT = 4; // พลาดติดกันเกินนี้ = ถือว่าถูกบล็อก/ล่ม แล้วปิดเกณฑ์นี้ทั้งเซสชัน
-    const MIN_ST_WATCHLIST = 2000; // จำนวนผู้ติดตามขั้นต่ำบน StockTwits ที่ถือว่า "เป็นที่พูดถึงมาก" (ปรับได้)
+    const MIN_ST_MENTIONS = 5; // จำนวนข้อความ/แหล่งกล่าวถึงขั้นต่ำบน StockTwits ที่ถือว่า "เป็นที่พูดถึงมาก" (ปรับได้ ไม่อิงจำนวนผู้ติดตามอีกต่อไป)
     let stBuzzConsecutiveFails = 0;
     let stBuzzDisabledThisSession = false;
     const stBuzzInFlight = new Map(); // กันยิงซ้ำซ้อนเมื่อมีการเรียกพร้อมกันหลายจุดของ symbol เดียวกัน
@@ -673,9 +673,10 @@
 
     // ถ้าเรียก StockTwits ไม่สำเร็จ (หรือถูกปิดเกณฑ์ทั้งเซสชันแล้ว) ให้ "ผ่าน" เกณฑ์นี้ไปก่อน
     // (fail-open) เพื่อไม่ให้ระบบหุ้นแนะนำหยุดทำงานทั้งหมดเพียงเพราะแหล่งข้อมูลเสริมนี้ใช้งานไม่ได้
+    // เกณฑ์นี้อิงจาก "จำนวนข้อความ/แหล่งที่กล่าวถึงหุ้นตัวนี้" (messageCount) แทนจำนวนผู้ติดตาม
     function isBuzzEligible(buzz) {
       if (!buzz || !buzz.ok) return true;
-      return buzz.watchlistCount >= MIN_ST_WATCHLIST;
+      return buzz.messageCount > MIN_ST_MENTIONS;
     }
 
     /* ---------------- AI transaction image import (Google Gemini Vision) ---------------- */
@@ -1349,7 +1350,7 @@
        ซึ่งเป็นข้อมูลเชิงคุณภาพที่ต้องอาศัยการคัดสรรของคนจริง ไม่ใช่การดึงรายชื่อหุ้นทั้งตลาดมาสุ่ม
        ดังนั้น Pool ของตัวสแกนตอนนี้ คือ TRENDING_UNIVERSE ด้านล่างนี้เพียงอย่างเดียว — เป็นลิสต์ที่
        คัดสรรไว้ล่วงหน้า พร้อมเหตุผล/สตอรี่ (catalyst) ของแต่ละตัวว่าทำไมถึงเป็นหุ้นกระแสที่มีคนพูดถึง
-       จากนั้นตัวสแกนจะกรองอีกชั้นด้วยเกณฑ์ทางเทคนิค 3 ข้อ (ดู isSetupEligible ด้านล่าง) เพื่อจับ
+       จากนั้นตัวสแกนจะกรองอีกชั้นด้วยเกณฑ์ทางเทคนิค 2 ข้อ (ดู isSetupEligible ด้านล่าง) เพื่อจับ
        "จังหวะ" ที่ใกล้จะเป็นขาขึ้นรอบถัดไปจริง ๆ จากหุ้นกระแสกลุ่มนี้
        หมายเหตุ: แอปนี้ไม่มีการเชื่อมต่อข้อมูลโซเชียล/ข่าว/จำนวนการกล่าวถึงแบบเรียลไทม์ จึงไม่สามารถ
        วัด "จำนวนผู้กล่าวถึง" เป็นตัวเลขอัตโนมัติได้ — ใช้การคัดสรรลิสต์ (TRENDING_UNIVERSE) แทน และ
@@ -1672,27 +1673,23 @@
     // เก็บ "ผลสแกน" (ลิสต์หุ้นที่เข้าเกณฑ์) ของแต่ละสัปดาห์ไว้ใน localStorage โดยคีย์ด้วย weekKey
     // เพื่อให้สแกนพูลทั้งหมดแค่ "ครั้งเดียวต่อสัปดาห์" — เปิดเว็บใหม่หรือสลับแท็บกี่ครั้งก็ตาม
     // จะไม่ไล่สแกนพูลซ้ำอีก จนกว่าจะขึ้นสัปดาห์ใหม่ (weekKey เปลี่ยน) ถึงจะสแกนชุดใหม่โดยอัตโนมัติ
-    // อัปเดตเวอร์ชันคีย์เป็น v3 เพื่อล้างผลสแกนสัปดาห์เก่าที่คัดมาก่อนจะมีเกณฑ์ "กระแสการพูดถึง"
-    // (StockTwits) ทิ้งไปโดยอัตโนมัติ — บังคับให้สแกนใหม่ทั้งพูลด้วยเกณฑ์ครบ 4 ข้อในครั้งถัดไป
-    const WEEKLY_PICKS_STORE_KEY = "us-dash-weekly-picks-v3";
+    // อัปเดตเวอร์ชันคีย์เป็น v4 เพื่อล้างผลสแกนสัปดาห์เก่าที่คัดมาก่อนปรับเกณฑ์ (ตัดเกณฑ์แนวรับออก
+    // และเปลี่ยนเกณฑ์กระแสการพูดถึงจากจำนวนผู้ติดตามเป็นจำนวนแหล่งที่กล่าวถึง) ทิ้งไปโดยอัตโนมัติ —
+    // บังคับให้สแกนใหม่ทั้งพูลด้วยเกณฑ์ 3 ข้อล่าสุดในครั้งถัดไป
+    const WEEKLY_PICKS_STORE_KEY = "us-dash-weekly-picks-v4";
 
     // เกณฑ์การคัดกรองหุ้นแนะนำ — เลือกจากหุ้นกระแส (TRENDING_UNIVERSE) ที่กำลังจะเป็นเทรนด์ขาขึ้น
-    // รอบถัดไป โดยต้องเข้าเกณฑ์เชิงเทคนิคครบ 3 องค์ประกอบร่วมกัน (ดูใน isSetupEligible):
-    //   1) ราคากำลังเข้าใกล้/ถึงแนวรับสำคัญ (ยังไม่หลุดแนวรับ)
-    //   2) มีเงินทุนจากรายใหญ่ไหลเข้าอย่างต่อเนื่อง (CMF เป็นบวกและมีแนวโน้มเพิ่มขึ้น)
-    //   3) โมเมนตัมบวกแรง (RSI/MACD) พร้อมจะเป็นเทรนด์ขาขึ้นรอบถัดไป (ไม่จำเป็นต้องเป็น Uptrend
+    // รอบถัดไป โดยต้องเข้าเกณฑ์เชิงเทคนิคครบ 2 องค์ประกอบร่วมกัน (ดูใน isSetupEligible):
+    //   1) มีเงินทุนจากรายใหญ่ไหลเข้าอย่างต่อเนื่อง (CMF เป็นบวกและมีแนวโน้มเพิ่มขึ้น)
+    //   2) โมเมนตัมบวกแรง (RSI/MACD) พร้อมจะเป็นเทรนด์ขาขึ้นรอบถัดไป (ไม่จำเป็นต้องเป็น Uptrend
     //      เต็มตัวแล้ว แค่ต้องไม่ใช่ขาลงที่ยังอยู่ในทิศทางลบชัดเจน)
-    // บวกเกณฑ์ที่ 4 (ดูใน isBuzzEligible ด้านบน): ต้องเป็นหุ้นที่ "ถูกกล่าวถึง/ติดตามมากในวงการ
-    // นักลงทุน-เทรดเดอร์" จริง โดยเชื่อมต่อข้อมูลสดจาก StockTwits (public API ฟรี 100% ไม่ใช้คีย์)
-    // แทนที่จะอิงจาก catalyst ที่เขียนไว้ตายตัวใน TRENDING_UNIVERSE เพียงอย่างเดียวเหมือนเดิม
-    const SUPPORT_PROXIMITY_PCT = 6;   // ราคาห่างจากแนวรับไม่เกิน 6% ถือว่า "กำลังถึงแนวรับสำคัญ"
+    // บวกเกณฑ์ที่ 3 (ดูใน isBuzzEligible ด้านบน): ต้องเป็นหุ้นที่ "ถูกกล่าวถึงในวงการนักลงทุน-
+    // เทรดเดอร์" จริง โดยเชื่อมต่อข้อมูลสดจาก StockTwits (public API ฟรี 100% ไม่ใช้คีย์) — นับจาก
+    // จำนวนแหล่ง/ข้อความที่กล่าวถึงมากกว่า MIN_ST_MENTIONS แหล่ง ไม่ใช้จำนวนผู้ติดตามอีกต่อไป
     const MIN_CMF_INFLOW = 0.03;       // CMF ต้องเป็นบวกพอสมควร ไม่ใช่บวกจาง ๆ ใกล้ศูนย์
 
     function isSetupEligible(cls) {
       if (!cls) return false;
-
-      const nearKeySupport =
-        cls.supportDistPct != null && cls.supportDistPct >= 0 && cls.supportDistPct <= SUPPORT_PROXIMITY_PCT;
 
       const bigMoneyInflowing =
         cls.cmf != null && cls.cmf > MIN_CMF_INFLOW && cls.cmfRising;
@@ -1704,7 +1701,7 @@
       // รอบถัดไป" ได้
       const notDeepDowntrend = !(cls.trend === "Downtrend" && cls.trendScore <= -2);
 
-      return nearKeySupport && bigMoneyInflowing && strongPositiveMomentum && notDeepDowntrend;
+      return bigMoneyInflowing && strongPositiveMomentum && notDeepDowntrend;
     }
 
     function getCapTier(mktCapB) {
@@ -1789,10 +1786,10 @@
               )}
               {rec.buzz && rec.buzz.ok && (
                 <span
-                  title={`มีผู้ติดตามบน StockTwits ${rec.buzz.watchlistCount.toLocaleString()} คน — เป็นที่พูดถึงมากในวงการนักลงทุน-เทรดเดอร์`}
+                  title={`มีการกล่าวถึงบน StockTwits ${rec.buzz.messageCount.toLocaleString()} แหล่ง — เป็นที่พูดถึงมากในวงการนักลงทุน-เทรดเดอร์`}
                   className="text-[9px] font-bold px-1.5 py-0.5 rounded border text-pink-300 bg-pink-500/10 border-pink-500/30"
                 >
-                  🗣️ พูดถึงเยอะ ({fmtCompactNum(rec.buzz.watchlistCount)})
+                  🗣️ พูดถึงเยอะ ({fmtCompactNum(rec.buzz.messageCount)})
                 </span>
               )}
             </div>
@@ -2070,7 +2067,7 @@
           const cls = classifyCached(entry.series);
           if (!isSetupEligible(cls)) continue;
           const buzz = buzzMap[item.symbol];
-          if (!isBuzzEligible(buzz)) continue; // เกณฑ์ที่ 4: ต้องเป็นหุ้นที่กระแสการพูดถึงสูงพอด้วย
+          if (!isBuzzEligible(buzz)) continue; // เกณฑ์ที่ 3: ต้องเป็นหุ้นที่กระแสการพูดถึงสูงพอด้วย
           const mktCapB = ((pick(entry.fundamentals, ["marketCapitalization"]) || entry.profile?.marketCapitalization || 0) * 1e6) / 1e9;
           const countryMeta = getCountryMeta(item.country);
           candidates.push({
@@ -2086,24 +2083,21 @@
           });
         }
 
-        // เรียงตามความแข็งแรงของสัญญาณรวม 4 ด้าน: แรงเงินทุนไหลเข้า (CMF ยิ่งสูงยิ่งดี) + ความใกล้
-        // แนวรับสำคัญ (ยิ่งใกล้แนวรับยิ่งได้คะแนนสูง) + โมเมนตัม RSI/Trend (ยิ่งบวกแรงยิ่งดี) + กระแส
-        // การพูดถึงบน StockTwits (ยิ่งมีคนติดตาม/พูดถึงเยอะยิ่งได้คะแนนเสริม แต่มีน้ำหนักน้อยกว่า
-        // สัญญาณเทคนิค เพื่อไม่ให้หุ้นดังล้วน ๆ แต่สัญญาณเทคนิคอ่อนแซงหน้าหุ้นที่ตั้งค่าเทคนิคแข็งแกร่ง
-        // กว่าไปได้ — ใช้ log ฐาน 10 บีบสเกลตัวเลขผู้ติดตามที่ห่างกันหลักหมื่น-แสนให้เทียบกันได้)
+        // เรียงตามความแข็งแรงของสัญญาณรวม 3 ด้าน: แรงเงินทุนไหลเข้า (CMF ยิ่งสูงยิ่งดี) + โมเมนตัม
+        // RSI/Trend (ยิ่งบวกแรงยิ่งดี) + กระแสการพูดถึงบน StockTwits (ยิ่งมีคนพูดถึง/กล่าวถึงจาก
+        // หลายแหล่งยิ่งได้คะแนนเสริม แต่มีน้ำหนักน้อยกว่าสัญญาณเทคนิค เพื่อไม่ให้หุ้นดังล้วน ๆ แต่
+        // สัญญาณเทคนิคอ่อนแซงหน้าหุ้นที่ตั้งค่าเทคนิคแข็งแกร่งกว่าไปได้ — ใช้ log ฐาน 10 บีบสเกล
+        // ตัวเลขจำนวนข้อความที่ห่างกันมากให้เทียบกันได้)
         const strength = (c) => {
           const cls = c.cls;
           const inflowScore = (cls.cmf || 0) * 3;
-          const supportScore = cls.supportDistPct != null
-            ? Math.max(0, (SUPPORT_PROXIMITY_PCT - cls.supportDistPct) / SUPPORT_PROXIMITY_PCT)
-            : 0;
           const momentumScore = cls.trendScore + (cls.rsi || 0) / 100;
-          const buzzScore = c.buzz && c.buzz.ok ? Math.log10(1 + c.buzz.watchlistCount) / 2 : 0;
-          return inflowScore + supportScore + momentumScore + buzzScore;
+          const buzzScore = c.buzz && c.buzz.ok ? Math.log10(1 + c.buzz.messageCount) / 2 : 0;
+          return inflowScore + momentumScore + buzzScore;
         };
         // คัดหุ้นแนะนำสุดท้ายด้วยการเรียงตามความแข็งแรงของสัญญาณล้วน ๆ (ไม่บังคับคละ Cap Tier /
-        // ภูมิภาค / อุตสาหกรรมอีกต่อไป) — หุ้นที่สัญญาณ "ใกล้แนวรับ + เงินทุนไหลเข้า + โมเมนตัมแรง +
-        // กระแสการพูดถึงสูง" แข็งแกร่งที่สุดในหุ้นกระแสกลุ่ม TRENDING_UNIVERSE จะถูกเลือกก่อนเสมอ
+        // ภูมิภาค / อุตสาหกรรมอีกต่อไป) — หุ้นที่สัญญาณ "เงินทุนไหลเข้า + โมเมนตัมแรง + กระแส
+        // การพูดถึงสูง" แข็งแกร่งที่สุดในหุ้นกระแสกลุ่ม TRENDING_UNIVERSE จะถูกเลือกก่อนเสมอ
         candidates.sort((a, b) => strength(b) - strength(a));
         return candidates.slice(0, WEEKLY_PICK_COUNT);
       }, [today, dataMap, buzzMap]);
@@ -2114,19 +2108,11 @@
             <div>
               <div className="flex items-center gap-2 text-amber-400 font-bold text-base">
                 <Zap className="fill-amber-400" size={18} />
-                <span>หุ้นแนะนำประจำสัปดาห์ 🔥 หุ้นกระแส (ใกล้แนวรับ + เงินทุนไหลเข้า + โมเมนตัมแรง + กระแสพูดถึงสูง - {WEEKLY_PICK_COUNT} ตัว)</span>
+                <span>หุ้นแนะนำประจำสัปดาห์ 🔥 หุ้นกระแส ({WEEKLY_PICK_COUNT} ตัว)</span>
               </div>
               <div className="text-xs text-zinc-400 mt-0.5">
-                เกณฑ์: คัดกรองจาก{" "}
-                <strong className="text-zinc-200">หุ้นกระแสที่คัดสรรไว้ล่วงหน้า (Trending Universe)</strong> โดยต้องเข้าเกณฑ์ครบทั้ง 4 ข้อ:{" "}
-                <strong className="text-emerald-400">(1) ราคากำลังเข้าใกล้/ถึงแนวรับสำคัญ</strong>,{" "}
-                <strong className="text-emerald-400">(2) มีเงินทุนจากรายใหญ่ไหลเข้าอย่างต่อเนื่อง (Money Flow เป็นบวกและเพิ่มขึ้น)</strong>,{" "}
-                <strong className="text-emerald-400">(3) โมเมนตัมบวกแรง ส่งสัญญาณว่ากำลังจะเป็นเทรนด์ขาขึ้นในรอบถัดไป</strong> และ{" "}
-                <strong className="text-pink-400">(4) มีผู้กล่าวถึง/ติดตามมากในวงการนักลงทุน-เทรดเดอร์ จริง</strong>{" "}
-                (เชื่อมข้อมูลสดจาก{" "}
-                <a href="https://stocktwits.com" target="_blank" rel="noopener noreferrer" className="underline hover:text-pink-300">StockTwits</a>{" "}
-                แบบฟรี 100% ไม่ใช้ API Key ต้องมีผู้ติดตามอย่างน้อย {MIN_ST_WATCHLIST.toLocaleString()} คนขึ้นไปจึงจะถือว่า "เป็นที่พูดถึงมาก") • ไม่มีการบังคับกระจาย Small/Mid/Large Cap หรือภูมิภาค/อุตสาหกรรมอีกต่อไป — คัด {WEEKLY_PICK_COUNT} ตัวสุดท้ายจากสัญญาณที่แข็งแกร่งที่สุดล้วน ๆ (เมื่อสแกนเจอผู้เข้าเกณฑ์ครบ {SCAN_BUFFER} ตัวจะหยุดสแกนทันทีเพื่อความเร็ว) • สแกนเพียง{" "}
-                <strong className="text-zinc-200">ครั้งเดียวต่อสัปดาห์โดยอัตโนมัติ</strong> แล้วจดจำชุดหุ้นนี้ไว้ ไม่ว่าจะเปิดเว็บใหม่หรือสลับแท็บกี่ครั้งก็ยังเป็นชุดเดิม จนกว่าจะขึ้นสัปดาห์ใหม่ถึงจะสแกนชุดใหม่ให้อัตโนมัติ
+                เกณฑ์: เงินทุนไหลเข้าต่อเนื่อง + โมเมนตัมบวกแรง + กระแสพูดถึงสูงบน{" "}
+                <a href="https://stocktwits.com" target="_blank" rel="noopener noreferrer" className="underline hover:text-pink-300">StockTwits</a>
               </div>
             </div>
             <div className="flex items-center gap-2">
@@ -2149,7 +2135,7 @@
             <div className="bg-zinc-800/60 border border-zinc-700 rounded-lg p-2.5 text-[11px] text-zinc-400 flex items-start gap-2">
               <span>ℹ️</span>
               <span>
-                เชื่อมต่อ StockTwits เพื่อเช็กกระแสการพูดถึงไม่สำเร็จในตอนนี้ (อาจเป็นเพราะเครือข่ายหรือ CORS) — ระบบจึงข้ามเกณฑ์ข้อ 4 ชั่วคราวในเซสชันนี้ และยังคงใช้เกณฑ์ทางเทคนิค 3 ข้อเดิมครบ
+                เชื่อมต่อ StockTwits เพื่อเช็กกระแสการพูดถึงไม่สำเร็จในตอนนี้ (อาจเป็นเพราะเครือข่ายหรือ CORS) — ระบบจึงข้ามเกณฑ์กระแสการพูดถึงชั่วคราวในเซสชันนี้ และยังคงใช้เกณฑ์ทางเทคนิค 2 ข้อเดิมครบ
               </span>
             </div>
           )}
@@ -2163,7 +2149,7 @@
           {!loading && recommended.length === 0 && (
             <div className="text-xs text-zinc-500 text-center py-6">
               {tdKey
-                ? "ยังไม่พบหุ้นที่ตรงเกณฑ์ ใกล้แนวรับสำคัญ + เงินทุนไหลเข้าต่อเนื่อง + โมเมนตัมบวกแรง + กระแสพูดถึงสูง ในสัปดาห์นี้"
+                ? "ยังไม่พบหุ้นที่ตรงเกณฑ์ เงินทุนไหลเข้าต่อเนื่อง + โมเมนตัมบวกแรง + กระแสพูดถึงสูง ในสัปดาห์นี้"
                 : "กรุณาตั้งค่า Twelve Data API Key เพื่อเริ่มใช้งานหุ้นแนะนำประจำสัปดาห์"}
             </div>
           )}
