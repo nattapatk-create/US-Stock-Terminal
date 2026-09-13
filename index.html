@@ -1992,7 +1992,7 @@
       );
     }
 
-    const WeeklyRecommendedPanel = React.memo(function WeeklyRecommendedPanel({ tdKey, fhKey, dataMap, loadSymbol, loadFundamentalsOnly, symbols, onAdd }) {
+    const WeeklyRecommendedPanel = React.memo(function WeeklyRecommendedPanel({ tdKey, fhKey, dataMap, loadSymbol, loadSymbolsBatch, loadFundamentalsOnly, symbols, onAdd }) {
       const [loading, setLoading] = useState(false);
       const [scanProgress, setScanProgress] = useState({ done: 0, total: 0, found: 0 });
       // buzzMap เก็บผลลัพธ์ "กระแสการพูดถึง" จาก StockTwits ต่อ symbol ({ ok, watchlistCount,
@@ -2067,9 +2067,9 @@
           const locked = await loadStore(WEEKLY_PICKS_STORE_KEY, null);
           if (locked && locked.weekKey === today.weekKey && Array.isArray(locked.symbols) && locked.symbols.length > 0) {
             setScanProgress({ done: locked.symbols.length, total: locked.symbols.length, found: locked.symbols.length });
-            await Promise.all(
-              locked.symbols.map((sym) => loadSymbol(sym, true, DEFAULT_TIMEFRAME, { skipFundamentals: true }))
-            );
+            // ใช้ loadSymbolsBatch แทน loadSymbol ทีละตัว — ชุดหุ้นที่ล็อกไว้มีไม่เกิน SCAN_BUFFER
+            // ตัวอยู่แล้ว จึงยิงเป็นคำขอเดียว (หรือไม่กี่คำขอ) แทนที่จะเข้าคิว tdQueue ทีละตัว
+            await loadSymbolsBatch(locked.symbols, DEFAULT_TIMEFRAME);
             if (fhKey && loadFundamentalsOnly) {
               await Promise.all(locked.symbols.map((sym) => loadFundamentalsOnly(sym)));
             }
@@ -2108,42 +2108,50 @@
 
           // หากพบครบตามเป้า (SCAN_BUFFER) จากแคชอยู่แล้ว ไม่ต้องสแกนเพิ่มเลย
           if (foundCount < SCAN_BUFFER) {
-            // รอบที่ 2: ไล่สแกนทีละตัวเฉพาะที่ยังไม่มีข้อมูล/ข้อมูลเก่า โดย "ข้ามการดึงข้อมูล
-            // พื้นฐาน (Finnhub) ระหว่างสแกน" เพื่อประหยัดโควตา Finnhub อย่างมาก (เดิมยิง Finnhub
-            // ทุกตัวที่สแกนแม้จะไม่ผ่านเกณฑ์ก็ตาม) — จะไปดึงเฉพาะตัวที่ผ่านเกณฑ์ในรอบถัดไปแทน
+            // รอบที่ 2: ไล่สแกนเป็น "ก้อน" (batch) ทีละ SCAN_BATCH_SIZE ตัว แทนการยิงทีละสัญลักษณ์
+            // ---------------------------------------------------------------------------------
+            // เดิมโค้ดตรงนี้เรียก loadSymbol() ทีละตัวแล้ว await รอคิว tdQueue ก่อนไปตัวถัดไป ซึ่ง
+            // บนแพ็กเกจฟรี Twelve Data (~7.7 วินาที/คำขอ) ทำให้ไล่สแกนพูล 4,000 ตัวได้ช้ามาก (ผู้ใช้
+            // เจอว่าสแกนไปได้แค่ ~200 ตัวแล้วยังไม่จบ) ตอนนี้เปลี่ยนมาใช้ loadSymbolsBatch() ที่รวม
+            // หลายสัญลักษณ์เป็น "1 คำขอ HTTP" ต่อคิว (ดูคำอธิบายเต็มที่ตัวฟังก์ชันใน App component)
+            // ทำให้เวลารอคิวโดยรวมลดลงเหลือประมาณ 1/SCAN_BATCH_SIZE ของเดิม — ยังคง "ข้ามการดึง
+            // ข้อมูลพื้นฐาน (Finnhub) ระหว่างสแกน" เหมือนเดิมทุกประการเพื่อประหยัดโควตา Finnhub
             const foundSet = new Set(foundSymbols);
-            for (const item of rotationPool) {
-              if (foundCount >= SCAN_BUFFER) {
-                console.log(`[Scanner] พบหุ้นเข้าเกณฑ์ครบ ${SCAN_BUFFER} ตัวแล้ว หยุดการสแกนทันที (ประหยัดโควตา API)`);
-                break;
-              }
-              if (foundSet.has(item.symbol)) { doneCount++; continue; }
+            const remaining = rotationPool.filter((item) => !foundSet.has(item.symbol));
 
-              const cachedFresh = dataMap[item.symbol];
-              const alreadyFresh = cachedFresh && !cachedFresh.stale && cachedFresh.series && cachedFresh.series.length >= 20;
+            outer:
+            for (let i = 0; i < remaining.length; i += SCAN_BATCH_SIZE) {
+              if (foundCount >= SCAN_BUFFER) break;
 
-              // จุดที่แก้บั๊กสำคัญ: เดิมโค้ดอ่านผลลัพธ์จาก dataMap/ref ของ React ทันทีหลัง await ซึ่ง
-              // อาจยังอัปเดตไม่ทันภายในรอบ loop เดียวกัน (state update เป็น async) ทำให้นับจำนวนที่
-              // เจอผิดพลาดและสแกนไม่ยอมหยุดแม้เจอครบแล้ว — ตอนนี้ใช้ค่าที่ loadSymbol() "คืนกลับมา
-              // โดยตรง" แทน จึงได้ข้อมูลล่าสุดที่ถูกต้องเสมอ
-              const entry = alreadyFresh
-                ? cachedFresh
-                : await loadSymbol(item.symbol, true, DEFAULT_TIMEFRAME, { skipFundamentals: true });
+              const batchItems = remaining.slice(i, i + SCAN_BATCH_SIZE);
+              // ยิงทั้งก้อนพร้อมกันเป็นคำขอเดียว (หรือไม่กี่คำขอถ้าบางตัวแคชสดอยู่แล้ว) แทนการรอคิว
+              // ทีละสัญลักษณ์ — ยังคืนค่าตรง ๆ กลับมาเหมือน loadSymbol เดิม ไม่ต้องพึ่ง state ของ
+              // React ที่เป็น async จึงเช็คเงื่อนไข "เจอครบ SCAN_BUFFER หรือยัง" ได้ถูกต้องทันที
+              const entryMap = await loadSymbolsBatch(batchItems.map((it) => it.symbol), DEFAULT_TIMEFRAME);
 
-              if (entry && entry.series && entry.series.length >= 20) {
-                const cls = classifyCached(entry.series);
-                if (isSetupEligible(cls)) {
-                  const buzz = await fetchStockTwitsBuzz(item.symbol);
-                  buzzResults[item.symbol] = buzz;
-                  if (isBuzzEligible(buzz)) {
-                    foundSet.add(item.symbol);
-                    foundSymbols.push(item.symbol);
-                    foundCount++;
+              for (const item of batchItems) {
+                const entry = entryMap[item.symbol];
+                doneCount++;
+
+                if (entry && entry.series && entry.series.length >= 20) {
+                  const cls = classifyCached(entry.series);
+                  if (isSetupEligible(cls)) {
+                    const buzz = await fetchStockTwitsBuzz(item.symbol);
+                    buzzResults[item.symbol] = buzz;
+                    if (isBuzzEligible(buzz)) {
+                      foundSet.add(item.symbol);
+                      foundSymbols.push(item.symbol);
+                      foundCount++;
+                    }
                   }
                 }
-              }
 
-              doneCount++;
+                if (foundCount >= SCAN_BUFFER) {
+                  console.log(`[Scanner] พบหุ้นเข้าเกณฑ์ครบ ${SCAN_BUFFER} ตัวแล้ว หยุดการสแกนทันที (ประหยัดโควตา API)`);
+                  setScanProgress({ done: doneCount, total: rotationPool.length, found: foundCount });
+                  break outer;
+                }
+              }
               setScanProgress({ done: doneCount, total: rotationPool.length, found: foundCount });
             }
           } else {
@@ -2173,7 +2181,7 @@
         } finally {
           setLoading(false);
         }
-      }, [tdKey, fhKey, today, loadSymbol, loadFundamentalsOnly, dataMap]);
+      }, [tdKey, fhKey, today, loadSymbolsBatch, loadFundamentalsOnly, dataMap]);
 
       useEffect(() => {
         // รอให้พูลหุ้นทั่วโลก (ดู fetchGlobalStockUniverse) โหลดเสร็จก่อนเสมอ (หรือ fail-open
@@ -5175,6 +5183,68 @@
         }
       }, [tdKey, fhKey, setEntry]);
 
+      // ============================================================
+      // Batch loader หลายสัญลักษณ์พร้อมกัน — แก้ปัญหา "สแกนได้แค่ ~200 ตัวจากพูล 4,000 ตัว"
+      // ------------------------------------------------------------
+      // สาเหตุเดิม: ตัวสแกนหุ้นแนะนำ (WeeklyRecommendedPanel.scanCandidates) เรียก loadSymbol()
+      // ทีละสัญลักษณ์ต่อรอบ ซึ่งแต่ละครั้งต้องเข้าคิว tdQueue ที่จำกัดจังหวะยิงจริงไว้ที่
+      // ~tdMinIntervalMs ต่อ "1 คำขอ HTTP" (บนแพ็กเกจฟรี ~7.7 วินาที/คำขอ = 8 คำขอ/นาที) ทำให้
+      // การไล่สแกนพูล 4,000 ตัวที่ไม่ได้อยู่ในแคชเลยต้องใช้เวลารวมหลายชั่วโมง (4,000 x ~7.7s ≈ 8.5
+      // ชม.) ผู้ใช้จึงเห็นว่าสแกนไปได้แค่ ~200 ตัวแล้วยังไม่จบ
+      // ทางแก้: ใช้ fetchSeriesBatch() ที่มีอยู่แล้ว (เดิมใช้แค่กับ Sector Rotation) มารวมหลาย
+      // สัญลักษณ์เป็น "1 คำขอ HTTP" ต่อ 1 คิว — Twelve Data นับเป็นคำขอเดียวต่อ rate limit แม้จะมี
+      // หลายสัญลักษณ์อยู่ข้างในก็ตาม (ยังเสีย credit ตามจำนวนสัญลักษณ์เท่าเดิมทุกประการ แค่ไม่ต้อง
+      // รอคิวทีละตัว) ทำให้เวลารอคิวลดลงเหลือ ~1/SCAN_BATCH_SIZE ของเดิม (เช่น 30 สัญลักษณ์/คำขอ
+      // ก็เร็วขึ้น ~30 เท่า) ฟังก์ชันนี้คืนค่า map ต่อสัญลักษณ์ตรง ๆ (ไม่ต้องพึ่ง state ของ React ที่
+      // เป็น async) เหมือนกับที่ loadSymbol() ทำไว้เดิม เพื่อให้ผู้เรียกเช็คเงื่อนไข "เจอครบ
+      // SCAN_BUFFER หรือยัง" ได้ถูกต้องทันที
+      const SCAN_BATCH_SIZE = 30; // จำนวนสัญลักษณ์ต่อคำขอ batch หนึ่งครั้ง — กันไม่ให้ URL ยาวเกินไป
+      // และยังให้ scanProgress อัปเดตถี่พอที่จะเห็นความคืบหน้าระหว่างสแกน
+      const loadSymbolsBatch = useCallback(async (symbolsArr, timeframe = DEFAULT_TIMEFRAME) => {
+        const key = tdKey.trim();
+        const results = {};
+        if (!key || !symbolsArr || symbolsArr.length === 0) return results;
+
+        // เช็คแคชก่อนเสมอ (เหมือน loadSymbol) — ตัวที่แคชยังสดอยู่ไม่ต้องยิง API เลย มีแค่ตัวที่
+        // แคชหมดอายุ/ไม่มีเท่านั้นที่จะถูกส่งไปรวมกลุ่มยิงจริง
+        const toFetch = [];
+        for (const symbol of symbolsArr) {
+          const cached = loadCachedEntry(symbol);
+          if (isCacheEntryFresh(cached, timeframe, false)) {
+            const entry = { ...cached, loading: false, error: null, stale: false };
+            results[symbol] = entry;
+            setEntry(symbol, entry);
+          } else {
+            toFetch.push(symbol);
+          }
+        }
+
+        for (let i = 0; i < toFetch.length; i += SCAN_BATCH_SIZE) {
+          const chunk = toFetch.slice(i, i + SCAN_BATCH_SIZE);
+          let seriesMap = {};
+          try {
+            seriesMap = await fetchSeriesBatch(chunk, key, timeframe);
+          } catch (e) {
+            console.warn("loadSymbolsBatch: fetchSeriesBatch ล้มเหลวทั้งก้อน", e);
+          }
+          for (const symbol of chunk) {
+            const series = seriesMap[symbol];
+            if (series && series.length > 0) {
+              const quote = deriveQuoteFromSeries(series);
+              const entry = { quote, series, timeframe, loading: false, error: null, stale: false, cachedAt: Date.now() };
+              results[symbol] = entry;
+              setEntry(symbol, entry);
+              saveCachedEntry(symbol, entry);
+            } else {
+              const entry = { loading: false, error: `ไม่พบข้อมูลราคาย้อนหลังของ ${symbol} (Twelve Data)` };
+              results[symbol] = entry;
+              setEntry(symbol, entry);
+            }
+          }
+        }
+        return results;
+      }, [tdKey, setEntry]);
+
       // ดึงเฉพาะข้อมูลพื้นฐาน (Finnhub: metric + profile) แบบเบา ๆ โดยไม่แตะ Twelve Data/series เลย
       // ใช้สำหรับดึง Market Cap เฉพาะหุ้นที่ผ่านเกณฑ์ Strong Bullish แล้วเท่านั้น (ดู
       // WeeklyRecommendedPanel.scanCandidates) แทนที่จะยิง Finnhub ให้ทุกตัวที่สแกนหาเหมือนเดิม
@@ -5540,6 +5610,7 @@
                   fhKey={fhKey}
                   dataMap={dataMap}
                   loadSymbol={loadSymbol}
+                  loadSymbolsBatch={loadSymbolsBatch}
                   loadFundamentalsOnly={loadFundamentalsOnly}
                   symbols={symbols}
                   onAdd={addSymbol}
