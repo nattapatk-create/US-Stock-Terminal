@@ -554,13 +554,31 @@
     }
 
     let tdMinIntervalMs = 7700;
-    let fhMinIntervalMs = 1100;
+    // ค่าเริ่มต้นเดิมของ Finnhub ถูก "เขียนตายตัว" ไว้ที่ 1100ms (~54.5 คำขอ/นาที) ไม่ว่าผู้ใช้จะใช้
+    // แผนฟรี (~60 คำขอ/นาที) หรือแผนเสียเงินที่โควตาสูงกว่ามาก (เช่น 150-300 คำขอ/นาที) ก็ตาม ทำให้
+    // ผู้ใช้แผนเสียเงินไม่ได้ประโยชน์จากโควตาที่มากกว่าเลย และงานที่พึ่ง Finnhub หนัก ๆ (สแกน
+    // fundamentals ของหุ้นที่ผ่านเกณฑ์เทคนิคแล้ว) ต้องรอคิวช้ากว่าที่ควรจะเป็น ตอนนี้ทำให้ปรับได้
+    // เหมือน Twelve Data (ดู setTdRateLimit) ผ่านช่อง "Finnhub: จำนวนคำขอสูงสุดต่อนาที" ในหน้าตั้งค่า
+    let fhMinIntervalMs = 1050; // ค่าเริ่มต้น ≈ 57 คำขอ/นาที เผื่อ margin เล็กน้อยจากเพดานฟรี 60/นาที
     function setTdRateLimit(callsPerMinute) {
       const n = Number(callsPerMinute);
       if (Number.isFinite(n) && n > 0) tdMinIntervalMs = Math.ceil(60000 / n);
     }
+    function setFhRateLimit(callsPerMinute) {
+      const n = Number(callsPerMinute);
+      if (Number.isFinite(n) && n > 0) fhMinIntervalMs = Math.ceil(60000 / n);
+    }
     const tdQueue = createQueue(() => tdMinIntervalMs);
     const fhQueue = createQueue(() => fhMinIntervalMs);
+
+    // เช็ค error ชั่วคราวของ Finnhub (โดน rate limit ต่อนาที/ต่อวินาทีชนโควตา) แบบเดียวกับ
+    // isTransientTdError — เดิม Finnhub ไม่มีการ retry เลย พอโดน 429 ระหว่างสแกนหุ้นจำนวนมาก
+    // (fundamentals/profile/news ของหุ้นที่ผ่านเกณฑ์เทคนิคแล้ว) จะเสียโอกาสไปเฉย ๆ ทั้งที่หุ้นตัวนั้น
+    // ผ่านการสแกนทางเทคนิค (ซึ่งเปลืองโควตา Twelve Data ไปแล้ว) มาก่อนแล้ว — การไม่ retry จึงเท่ากับ
+    // ทิ้งงานที่ลงทุนโควตาไปแล้วครึ่งทาง ทำให้ภาพรวมใช้โควตาทั้งสอง API ไม่คุ้มค่า
+    function isTransientFhError(res) {
+      return res.status === 429 || res.status === 403;
+    }
 
     /* ---------------- storage helpers ---------------- */
     async function loadStore(key, fallback) {
@@ -1199,8 +1217,18 @@
     async function fetchFinnhubQuote(symbol, fhKey) {
       return fhQueue(async () => {
         bumpFhCalls();
-        const res = await fetch(`${FH_BASE}/quote?symbol=${encodeURIComponent(symbol)}&token=${fhKey}`);
-        const data = await res.json();
+        let res, data;
+        for (let attempt = 0; attempt < 2; attempt++) {
+          res = await fetch(`${FH_BASE}/quote?symbol=${encodeURIComponent(symbol)}&token=${fhKey}`);
+          if (isTransientFhError(res) && attempt === 0) {
+            // โดน rate limit ชั่วคราว → รอสั้น ๆ แล้วลองใหม่อีกครั้งก่อนจะปล่อยให้ผู้เรียก fallback ไป
+            // ทาง series/Twelve Data (การ retry เร็ว ๆ ในคิวเดิมมักเร็วกว่าการ fallback ข้าม provider)
+            await new Promise((r) => setTimeout(r, fhMinIntervalMs * 2));
+            continue;
+          }
+          break;
+        }
+        data = await res.json().catch(() => null);
         // Finnhub คืน c=0 เมื่อไม่พบสัญลักษณ์ หรือ error/limit — ถือว่าใช้ไม่ได้ ให้ผู้เรียก fallback ต่อ
         if (data == null || !data.c) throw new Error("ดึงราคาล่าสุดจาก Finnhub ไม่สำเร็จ");
         return {
@@ -1242,8 +1270,18 @@
       if (!fhKey) return null;
       return fhQueue(async () => {
         bumpFhCalls();
-        const res = await fetch(`${FH_BASE}/stock/metric?symbol=${encodeURIComponent(symbol)}&metric=all&token=${fhKey}`);
-        const data = await res.json();
+        let res;
+        for (let attempt = 0; attempt < 2; attempt++) {
+          res = await fetch(`${FH_BASE}/stock/metric?symbol=${encodeURIComponent(symbol)}&metric=all&token=${fhKey}`);
+          if (isTransientFhError(res) && attempt === 0) {
+            // ตัวนี้มักถูกยิงหลังผ่านเกณฑ์เทคนิคมาแล้ว (เปลืองโควตา Twelve Data ไปก่อนหน้านี้แล้ว)
+            // จึงคุ้มที่จะรอสั้น ๆ แล้วลองซ้ำในคิวเดิม ดีกว่าปล่อยให้หุ้นตัวนี้หลุดคะแนนพื้นฐานไปเฉย ๆ
+            await new Promise((r) => setTimeout(r, fhMinIntervalMs * 2));
+            continue;
+          }
+          break;
+        }
+        const data = await res.json().catch(() => ({}));
         return data.metric || {};
       });
     }
@@ -1252,8 +1290,16 @@
       if (!fhKey) return null;
       return fhQueue(async () => {
         bumpFhCalls();
-        const res = await fetch(`${FH_BASE}/stock/profile2?symbol=${encodeURIComponent(symbol)}&token=${fhKey}`);
-        return res.json();
+        let res;
+        for (let attempt = 0; attempt < 2; attempt++) {
+          res = await fetch(`${FH_BASE}/stock/profile2?symbol=${encodeURIComponent(symbol)}&token=${fhKey}`);
+          if (isTransientFhError(res) && attempt === 0) {
+            await new Promise((r) => setTimeout(r, fhMinIntervalMs * 2));
+            continue;
+          }
+          break;
+        }
+        return res.json().catch(() => null);
       });
     }
 
@@ -1820,10 +1866,18 @@
         const to = new Date();
         const from = new Date(to.getTime() - NEWS_LOOKBACK_DAYS * 24 * 60 * 60 * 1000);
         const fmt = (d) => d.toISOString().slice(0, 10);
-        const res = await fetch(
-          `${FH_BASE}/company-news?symbol=${encodeURIComponent(symbol)}&from=${fmt(from)}&to=${fmt(to)}&token=${fhKey}`
-        );
-        const data = await res.json();
+        let res;
+        for (let attempt = 0; attempt < 2; attempt++) {
+          res = await fetch(
+            `${FH_BASE}/company-news?symbol=${encodeURIComponent(symbol)}&from=${fmt(from)}&to=${fmt(to)}&token=${fhKey}`
+          );
+          if (isTransientFhError(res) && attempt === 0) {
+            await new Promise((r) => setTimeout(r, fhMinIntervalMs * 2));
+            continue;
+          }
+          break;
+        }
+        const data = await res.json().catch(() => null);
         return Array.isArray(data) ? data.length : 0;
       }).catch(() => null);
     }
@@ -5149,6 +5203,8 @@
       const [geminiKeyDraft, setGeminiKeyDraft] = useState("");
       const [tdRatePerMin, setTdRatePerMin] = useState(8);
       const [tdRateDraft, setTdRateDraft] = useState("8");
+      const [fhRatePerMin, setFhRatePerMin] = useState(60);
+      const [fhRateDraft, setFhRateDraft] = useState("60");
       const [showSettings, setShowSettings] = useState(false);
       const [tab, setTab] = useState("watchlist");
       const [input, setInput] = useState("");
@@ -5165,7 +5221,7 @@
       useEffect(() => {
         (async () => {
           const [keys, wl] = await Promise.all([
-            loadStore("us-dash-keys", { td: "", fh: "", gemini: "", tdRate: 8 }),
+            loadStore("us-dash-keys", { td: "", fh: "", gemini: "", tdRate: 8, fhRate: 60 }),
             loadStore("us-dash-watchlist", DEFAULT_WATCHLIST),
           ]);
           setTdKey(keys.td || "");
@@ -5178,6 +5234,10 @@
           setTdRatePerMin(rate);
           setTdRateDraft(String(rate));
           setTdRateLimit(rate);
+          const fhRate = keys.fhRate || 60;
+          setFhRatePerMin(fhRate);
+          setFhRateDraft(String(fhRate));
+          setFhRateLimit(fhRate);
           setSymbols(wl);
 
           const cachedMap = {};
@@ -5480,13 +5540,17 @@
         const fh = fhKeyDraft.trim();
         const gemini = geminiKeyDraft.trim();
         const rate = Math.max(1, parseInt(tdRateDraft, 10) || 8);
+        const fhRate = Math.max(1, parseInt(fhRateDraft, 10) || 60);
         if (td !== tdKey) setTdKey(td);
         if (fh !== fhKey) setFhKey(fh);
         if (gemini !== geminiKey) setGeminiKey(gemini);
         setTdRatePerMin(rate);
         setTdRateDraft(String(rate));
         setTdRateLimit(rate);
-        saveStore("us-dash-keys", { td, fh, gemini, tdRate: rate });
+        setFhRatePerMin(fhRate);
+        setFhRateDraft(String(fhRate));
+        setFhRateLimit(fhRate);
+        saveStore("us-dash-keys", { td, fh, gemini, tdRate: rate, fhRate });
       };
 
       const exportBackup = () => {
@@ -5530,6 +5594,10 @@
               setTdRatePerMin(rate);
               setTdRateDraft(String(rate));
               setTdRateLimit(rate);
+              const fhRate = parsed.keys.fhRate || 60;
+              setFhRatePerMin(fhRate);
+              setFhRateDraft(String(fhRate));
+              setFhRateLimit(fhRate);
             }
             alert("นำเข้าข้อมูลสำรองสำเร็จเรียบร้อย!");
             window.location.reload();
@@ -5573,11 +5641,9 @@
             <div className="ml-auto flex items-center gap-2">
               <span className="text-xs font-mono text-zinc-400 border border-zinc-800 bg-zinc-900/70 px-2.5 py-1.5 rounded-lg flex items-center gap-1.5" title="Twelve Data ใช้สำหรับดึงแท่งราคาย้อนหลัง (candles) เพื่อคำนวณแนวรับ/แนวต้าน/EMA/RSI/MACD เท่านั้น ส่วนราคาล่าสุดแบบรายวันจะดึงผ่าน Finnhub แทนเพื่อลดภาระ Twelve Data">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 live-dot" />
-                TD: <strong className="text-blue-300">{tdCallsToday}</strong>
+                TD: <strong className="text-blue-300">{tdCallsToday}</strong> ({tdRatePerMin}/นาที)
                 <span className="text-zinc-700 mx-1">|</span>
-                {tdRatePerMin}/นาที
-                <span className="text-zinc-700 mx-1">|</span>
-                FH: <strong className="text-emerald-300">{fhCallsToday}</strong>
+                FH: <strong className="text-emerald-300">{fhCallsToday}</strong> ({fhRatePerMin}/นาที)
               </span>
               <button
                 onClick={exportBackup}
@@ -5637,18 +5703,35 @@
                   </div>
                 </div>
               </div>
-              <div className="text-xs max-w-sm">
-                <label className="text-zinc-400 block mb-1">
-                  Twelve Data: จำนวนคำขอสูงสุดต่อนาที (ตาม Plan ของคุณ)
-                </label>
-                <input
-                  type="number"
-                  min="1"
-                  value={tdRateDraft}
-                  onChange={(e) => setTdRateDraft(e.target.value)}
-                  className="w-28 bg-zinc-950 border border-zinc-800 rounded px-3 py-1.5 font-mono text-zinc-100"
-                  placeholder="8"
-                />
+              <div className="flex flex-wrap gap-4 text-xs">
+                <div>
+                  <label className="text-zinc-400 block mb-1">
+                    Twelve Data: จำนวนคำขอสูงสุดต่อนาที (ตาม Plan ของคุณ)
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    value={tdRateDraft}
+                    onChange={(e) => setTdRateDraft(e.target.value)}
+                    className="w-28 bg-zinc-950 border border-zinc-800 rounded px-3 py-1.5 font-mono text-zinc-100"
+                    placeholder="8"
+                  />
+                  <div className="text-[10px] text-zinc-500 mt-1">แผนฟรี = 8 • ปรับตาม Plan ที่คุณสมัคร</div>
+                </div>
+                <div>
+                  <label className="text-zinc-400 block mb-1">
+                    Finnhub: จำนวนคำขอสูงสุดต่อนาที (ตาม Plan ของคุณ)
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    value={fhRateDraft}
+                    onChange={(e) => setFhRateDraft(e.target.value)}
+                    className="w-28 bg-zinc-950 border border-zinc-800 rounded px-3 py-1.5 font-mono text-zinc-100"
+                    placeholder="60"
+                  />
+                  <div className="text-[10px] text-zinc-500 mt-1">แผนฟรี ≈ 60 • ปรับสูงขึ้นได้ถ้าใช้ Plan เสียเงิน เพื่อดึงงบการเงิน/ข่าว/ราคาล่าสุดเร็วขึ้นและลดภาระ Twelve Data ลงไปอีก</div>
+                </div>
               </div>
               <button
                 onClick={() => { commitKeys(); setShowSettings(false); }}
