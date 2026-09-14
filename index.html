@@ -596,89 +596,6 @@
       }
     }
 
-    /* ---------------- StockTwits social/trader buzz helper (ฟรี 100% ไม่ต้องใช้ API Key) ---------------- */
-    // เกณฑ์ใหม่ที่เพิ่มเข้ามา: "ต้องเป็นหุ้นที่มีผู้กล่าวถึง/ติดตามมากในวงการนักลงทุน-เทรดเดอร์" โดย
-    // เชื่อมต่อกับแหล่งข้อมูลภายนอกจริง ไม่ใช่แค่อิงจาก catalyst ที่เขียนไว้ตายตัวใน TRENDING_UNIVERSE
-    // เหมือนเดิมอีกต่อไป — ใช้ endpoint สาธารณะของ StockTwits (https://api.stocktwits.com) ซึ่งเป็น
-    // ชุมชนนักลงทุน/เทรดเดอร์รายย่อยที่ใหญ่ที่สุดแห่งหนึ่ง เรียกได้ฟรีโดยไม่ต้องสมัคร ไม่ต้องมี API Key
-    //   - watchlist_count = จำนวนนักลงทุน/เทรดเดอร์บน StockTwits ที่ "ติดตาม" หุ้นตัวนี้อยู่จริง
-    //     (ยิ่งสูง ยิ่งแปลว่าเป็นหุ้นที่คนในวงการพูดถึง/จับตามองกันมาก)
-    //   - messageCount = จำนวนข้อความ/โพสต์ล่าสุดที่ดึงมาได้ในการเรียกครั้งนี้ (ความคึกคักของกระทู้)
-    // หมายเหตุสำคัญ: นี่เป็น public API ที่ไม่มีเอกสารทางการ ไม่มี SLA และไม่ต้องใช้คีย์ จึงอาจโดน
-    // จำกัดอัตราเรียก (rate limit) หรือถูกเบราว์เซอร์บล็อกด้วย CORS ได้ในบางเครือข่าย — โค้ดนี้ออกแบบ
-    // ให้ "fail-open" เสมอ: ถ้าเรียกไม่สำเร็จติดต่อกันหลายครั้ง จะปิดการบังคับใช้เกณฑ์นี้ชั่วคราวใน
-    // เซสชันนั้น ๆ (ยังคงเกณฑ์ทางเทคนิค 2 ข้อเดิมไว้ครบ) เพื่อไม่ให้ทั้งระบบหุ้นแนะนำล่มหรือไม่พบหุ้น
-    // เลยเพียงเพราะแหล่งข้อมูลเสริมนี้ใช้งานไม่ได้ชั่วคราว
-    const ST_BUZZ_CACHE_KEY = "us-dash-stocktwits-buzz-v1";
-    const ST_BUZZ_TTL_MS = 3 * 60 * 60 * 1000; // แคชผลไว้ 3 ชม./ตัว ลดจำนวนการยิง API ซ้ำ
-    const ST_BUZZ_FAIL_LIMIT = 4; // พลาดติดกันเกินนี้ = ถือว่าถูกบล็อก/ล่ม แล้วปิดเกณฑ์นี้ทั้งเซสชัน
-    const MIN_ST_MENTIONS = 5; // จำนวนข้อความ/แหล่งกล่าวถึงขั้นต่ำบน StockTwits ที่ถือว่า "เป็นที่พูดถึงมาก" (ปรับได้ ไม่อิงจำนวนผู้ติดตามอีกต่อไป)
-    let stBuzzConsecutiveFails = 0;
-    let stBuzzDisabledThisSession = false;
-    const stBuzzInFlight = new Map(); // กันยิงซ้ำซ้อนเมื่อมีการเรียกพร้อมกันหลายจุดของ symbol เดียวกัน
-
-    function readBuzzCache() {
-      try {
-        const raw = localStorage.getItem(ST_BUZZ_CACHE_KEY);
-        return raw ? JSON.parse(raw) : {};
-      } catch {
-        return {};
-      }
-    }
-    function writeBuzzCacheEntry(symbol, entry) {
-      try {
-        const all = readBuzzCache();
-        all[symbol] = entry;
-        localStorage.setItem(ST_BUZZ_CACHE_KEY, JSON.stringify(all));
-      } catch (e) {
-        console.error("StockTwits buzz cache save failed", e);
-      }
-    }
-
-    async function fetchStockTwitsBuzz(symbol) {
-      if (stBuzzDisabledThisSession) return { ok: false, disabled: true };
-
-      const cached = readBuzzCache()[symbol];
-      if (cached && Date.now() - cached.fetchedAt < ST_BUZZ_TTL_MS) return cached;
-      if (stBuzzInFlight.has(symbol)) return stBuzzInFlight.get(symbol);
-
-      const p = (async () => {
-        try {
-          const res = await fetch(`https://api.stocktwits.com/api/2/streams/symbol/${encodeURIComponent(symbol)}.json`);
-          if (!res.ok) throw new Error(`StockTwits HTTP ${res.status}`);
-          const data = await res.json();
-          const watchlistCount = data?.symbol?.watchlist_count ?? 0;
-          const messageCount = Array.isArray(data?.messages) ? data.messages.length : 0;
-          stBuzzConsecutiveFails = 0;
-          const entry = { ok: true, watchlistCount, messageCount, fetchedAt: Date.now() };
-          writeBuzzCacheEntry(symbol, entry);
-          return entry;
-        } catch (e) {
-          stBuzzConsecutiveFails += 1;
-          if (stBuzzConsecutiveFails >= ST_BUZZ_FAIL_LIMIT) {
-            stBuzzDisabledThisSession = true;
-            console.warn(
-              "[StockTwits] เรียก API ไม่สำเร็จหลายครั้งติดกัน — ปิดเกณฑ์ 'กระแสการพูดถึง' ชั่วคราวในเซสชันนี้ (อาจเกิดจาก CORS/rate limit ของ StockTwits)",
-              e
-            );
-          }
-          return { ok: false, error: String(e) };
-        } finally {
-          stBuzzInFlight.delete(symbol);
-        }
-      })();
-      stBuzzInFlight.set(symbol, p);
-      return p;
-    }
-
-    // ถ้าเรียก StockTwits ไม่สำเร็จ (หรือถูกปิดเกณฑ์ทั้งเซสชันแล้ว) ให้ "ผ่าน" เกณฑ์นี้ไปก่อน
-    // (fail-open) เพื่อไม่ให้ระบบหุ้นแนะนำหยุดทำงานทั้งหมดเพียงเพราะแหล่งข้อมูลเสริมนี้ใช้งานไม่ได้
-    // เกณฑ์นี้อิงจาก "จำนวนข้อความ/แหล่งที่กล่าวถึงหุ้นตัวนี้" (messageCount) แทนจำนวนผู้ติดตาม
-    function isBuzzEligible(buzz) {
-      if (!buzz || !buzz.ok) return true;
-      return buzz.messageCount > MIN_ST_MENTIONS;
-    }
-
     /* ---------------- AI transaction image import (Google Gemini Vision) ---------------- */
     const GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent";
     const PORTFOLIO_EXTRACT_PROMPT = [
@@ -1343,20 +1260,22 @@
     /* ============================================================
        STOCK UNIVERSE (POOL สำหรับตัวสแกน)
        ------------------------------------------------------------
-       ปรับใหม่ตามโจทย์ล่าสุด: ขยาย Pool กลับมาเป็นหุ้นทั่วโลกจำนวนมาก (เป้าหมาย ~4,000 ตัว) เพื่อ
-       เพิ่มโอกาสเจอหุ้นที่เข้าเกณฑ์โมเมนตัม+กระแสพูดถึงให้กว้างกว่าลิสต์คัดสรรอย่างเดียว
-       Pool ของตัวสแกนตอนนี้ = TRENDING_UNIVERSE (ลิสต์คัดสรรไว้ล่วงหน้า พร้อมเหตุผล/สตอรี่
-       (catalyst) ของแต่ละตัว) รวมกับหุ้นสามัญ (Common Stock) ทั่วโลกอีกก้อนใหญ่ที่ดึงมาจาก
-       Twelve Data endpoint "/stocks" (ดู fetchGlobalStockUniverse ด้านล่าง) รวมกันสูงสุด
-       GLOBAL_UNIVERSE_TARGET_SIZE ตัว โดยเลือกแบบ round-robin ตามประเทศ (ดู buildDiverseUniverse)
-       เพื่อกันไม่ให้ตลาดเดียว (โดยเฉพาะสหรัฐฯ ที่มีจำนวนหุ้นเยอะสุด) ยึดพูลเกินสัดส่วนที่ตั้งไว้
+       Pool หุ้นทั่วโลกสำหรับ "ตัวสแกนหุ้นดีราคาถูก" (เป้าหมาย ~3,000 ตัว กระจายทุกอุตสาหกรรม/
+       ทุกประเทศ) เพื่อเพิ่มโอกาสเจอหุ้นที่เข้าเกณฑ์มูลค่า (Value) ให้กว้างกว่าลิสต์คัดสรรอย่างเดียว
+       Pool ของตัวสแกนตอนนี้ = TRENDING_UNIVERSE (ลิสต์คัดสรรไว้ล่วงหน้า) รวมกับหุ้นสามัญ
+       (Common Stock) ทั่วโลกอีกก้อนใหญ่ที่ดึงมาจาก Twelve Data endpoint "/stocks" (ดู
+       fetchGlobalStockUniverse ด้านล่าง) รวมกันสูงสุด GLOBAL_UNIVERSE_TARGET_SIZE ตัว โดยเลือก
+       แบบ round-robin ตามประเทศ (ดู buildDiverseUniverse) เพื่อกันไม่ให้ตลาดเดียว (โดยเฉพาะ
+       สหรัฐฯ ที่มีจำนวนหุ้นเยอะสุด) ยึดพูลเกินสัดส่วนที่ตั้งไว้ — หุ้นแต่ละตัวในพูลนี้กระจายอยู่คนละ
+       อุตสาหกรรมกันตามธรรมชาติของตลาด (อุตสาหกรรม/sector ที่แท้จริงจะทราบก็ต่อเมื่อดึงข้อมูลพื้นฐาน
+       จาก Finnhub ของตัวที่ผ่านเกณฑ์แล้วเท่านั้น)
        รายชื่อที่ดึงมาจะถูกแคชไว้ใน localStorage หลายวัน (ดู STOCK_UNIVERSE_TTL_MS) เพราะรายชื่อ
        หุ้นในตลาดเปลี่ยนไม่บ่อย ไม่ต้องดึงใหม่ทุกครั้งที่เปิดเว็บ
        หากดึงรายชื่อทั่วโลกไม่สำเร็จ (ไม่มี Twelve Data API Key หรือเครือข่ายมีปัญหา) ระบบจะ
        "fail-open" กลับไปใช้แค่ TRENDING_UNIVERSE ไปก่อน เพื่อไม่ให้ทั้งฟีเจอร์หุ้นแนะนำใช้งานไม่ได้
        เลยเพียงเพราะพูลส่วนขยายนี้โหลดไม่สำเร็จชั่วคราว
-       จากนั้นตัวสแกนจะกรองอีกชั้นด้วยเกณฑ์คัดเลือกสุดท้าย 2 ข้อ (ดู isSetupEligible/isBuzzEligible
-       ด้านล่าง): โมเมนตัมบวก-บวกแรง + กระแสพูดถึงสูงในวงการนักลงทุน-เทรดเดอร์ (StockTwits)
+       จากนั้นตัวสแกนจะกรองอีกชั้นด้วยเกณฑ์ "หุ้นดีราคาถูก" 3 ข้อจากงบการเงินจริง (ดู
+       isValueEligible ด้านล่าง): P/E Ratio, P/B Ratio และ P/FCF Ratio
        ============================================================ */
 
     function pick(obj, keys) {
@@ -1366,7 +1285,7 @@
     }
 
     /* ---------------- Global stock universe fetch (Twelve Data /stocks) ---------------- */
-    const GLOBAL_UNIVERSE_TARGET_SIZE = 4000; // ขนาดพูลหุ้นทั่วโลกสูงสุดที่ต้องการ (รวม TRENDING_UNIVERSE แล้ว)
+    const GLOBAL_UNIVERSE_TARGET_SIZE = 3000; // ขนาดพูลหุ้นทั่วโลกสูงสุดที่ต้องการ (รวม TRENDING_UNIVERSE แล้ว) กระจายทุกอุตสาหกรรม/ทุกประเทศ
     const STOCK_UNIVERSE_CACHE_KEY = "us-dash-stock-universe-v1";
     const STOCK_UNIVERSE_TTL_MS = 3 * 24 * 60 * 60 * 1000; // แคชรายชื่อหุ้นทั่วโลกไว้ 3 วัน (รายชื่อเปลี่ยนไม่บ่อย)
     const MAX_UNIVERSE_COUNTRY_RATIO = 0.35; // กันไม่ให้ตลาดเดียว (เช่น สหรัฐฯ) ยึดพูลเกิน 35% ของทั้งหมด
@@ -1764,43 +1683,62 @@
 
     // กำหนดการสแกน:
     // 1. แนะนำสุดท้าย 10 ตัว
-    // 2. Pool = TRENDING_UNIVERSE ที่คัดสรรไว้ล่วงหน้าเท่านั้น (หุ้นกระแส/มีสตอรี่ที่วงการนักลงทุน
-    //    เทรดเดอร์ VI สำนักวิเคราะห์ และผู้จัดการกองทุนพูดถึงกันมาก) — ไม่ขยาย Pool เป็นหุ้นทั่วโลก
-    //    นับพันตัวอีกต่อไป และไม่บังคับกระจาย Small/Mid/Large Cap หรือภูมิภาค/อุตสาหกรรมแบบเดิม
+    // 2. Pool = TRENDING_UNIVERSE ที่คัดสรรไว้ล่วงหน้า รวมกับหุ้นทั่วโลกจาก Twelve Data (ดูหัวข้อ
+    //    STOCK UNIVERSE ด้านบน) รวมกันสูงสุด ~3,000 ตัว กระจายทุกอุตสาหกรรม/ทุกประเทศ
     // 3. สแกนจนพบหุ้นที่เข้าเกณฑ์ครบ SCAN_BUFFER ตัวแล้วให้ "หยุดสแกนทันที" (Fast Stop) — เผื่อ
-    //    ตัวเลือกไว้มากกว่า 10 เล็กน้อย จากนั้นคัด 10 ตัวสุดท้ายด้วยการเรียงคะแนนความแข็งแรงของ
-    //    สัญญาณล้วน ๆ (ไม่มีการบังคับคละกลุ่มใด ๆ)
-    //    (เดิมมีบั๊ก: เช็คผลลัพธ์จาก state/ref ที่อัปเดตช้ากว่ารอบสแกน ทำให้นับจำนวนที่เจอผิดพลาด
-    //    และสแกนไม่ยอมหยุดแม้เจอครบแล้ว — แก้โดยใช้ค่าที่ loadSymbol() คืนกลับมาโดยตรงแทน)
+    //    ตัวเลือกไว้มากกว่า 10 เล็กน้อย จากนั้นคัด 10 ตัวสุดท้ายด้วยการเรียงจาก "ถูกที่สุด" ก่อน
+    //    (ผลรวมของ P/E, P/B, P/FCF เทียบกับเกณฑ์สูงสุดของแต่ละตัว ยิ่งน้อยยิ่งถูก)
     const WEEKLY_PICK_COUNT = 10;
     const SCAN_BUFFER = 30;
+    // จำนวนสัญลักษณ์ที่ยิงคำขอ Finnhub metric พร้อมกันต่อรอบระหว่างสแกน (fhQueue ยังคุมจังหวะยิง
+    // จริงไม่ให้เกิน fhMinIntervalMs/คำขออยู่ดี ค่านี้แค่กำหนดว่าเช็ค scanProgress/Fast-Stop ถี่แค่ไหน)
+    const FUND_SCAN_BATCH_SIZE = 10;
     // เก็บ "ผลสแกน" (ลิสต์หุ้นที่เข้าเกณฑ์) ของแต่ละสัปดาห์ไว้ใน localStorage โดยคีย์ด้วย weekKey
     // เพื่อให้สแกนพูลทั้งหมดแค่ "ครั้งเดียวต่อสัปดาห์" — เปิดเว็บใหม่หรือสลับแท็บกี่ครั้งก็ตาม
     // จะไม่ไล่สแกนพูลซ้ำอีก จนกว่าจะขึ้นสัปดาห์ใหม่ (weekKey เปลี่ยน) ถึงจะสแกนชุดใหม่โดยอัตโนมัติ
-    // อัปเดตเวอร์ชันคีย์เป็น v4 เพื่อล้างผลสแกนสัปดาห์เก่าที่คัดมาก่อนปรับเกณฑ์ (ตัดเกณฑ์แนวรับออก
-    // และเปลี่ยนเกณฑ์กระแสการพูดถึงจากจำนวนผู้ติดตามเป็นจำนวนแหล่งที่กล่าวถึง) ทิ้งไปโดยอัตโนมัติ —
-    // บังคับให้สแกนใหม่ทั้งพูลด้วยเกณฑ์ 3 ข้อล่าสุดในครั้งถัดไป
-    const WEEKLY_PICKS_STORE_KEY = "us-dash-weekly-picks-v5";
+    // อัปเดตเวอร์ชันคีย์เป็น v6 เพื่อล้างผลสแกนสัปดาห์เก่าที่คัดมาด้วยเกณฑ์โมเมนตัม+กระแสพูดถึงทิ้งไป
+    // โดยอัตโนมัติ — บังคับให้สแกนใหม่ทั้งพูลด้วยเกณฑ์ "หุ้นดีราคาถูก" ชุดใหม่ในครั้งถัดไป
+    const WEEKLY_PICKS_STORE_KEY = "us-dash-weekly-picks-v6";
 
-    // เกณฑ์การคัดกรองหุ้นแนะนำสุดท้าย — เลือกจากพูลหุ้นทั่วโลก (ดูหัวข้อ STOCK UNIVERSE ด้านบน)
-    // โดยต้องเข้าเกณฑ์ครบ 2 ข้อร่วมกัน:
-    //   1) โมเมนตัมบวก-บวกแรง (ดูใน isSetupEligible) ส่งสัญญาณว่ากำลังจะเป็นเทรนด์ขาขึ้นในรอบถัดไป
-    //      (ไม่จำเป็นต้องเป็น Uptrend เต็มตัวแล้ว แค่ต้องไม่ใช่ขาลงที่ยังอยู่ในทิศทางลบชัดเจน)
-    //   2) มีผู้กล่าวถึง/ติดตามมากในวงการนักลงทุน-เทรดเดอร์จริง (ดูใน isBuzzEligible ด้านบน) โดย
-    //      เชื่อมต่อข้อมูลสดจาก StockTwits (public API ฟรี 100% ไม่ใช้คีย์) — นับจากจำนวนแหล่ง/
-    //      ข้อความที่กล่าวถึงมากกว่า MIN_ST_MENTIONS แหล่ง
+    // เกณฑ์การคัดกรองหุ้นแนะนำสุดท้าย — "หุ้นดีราคาถูก" เลือกจากพูลหุ้นทั่วโลก (ดูหัวข้อ STOCK
+    // UNIVERSE ด้านบน) โดยอิงจากงบการเงินจริง 3 งบ ต้องเข้าเกณฑ์ครบทั้ง 3 ข้อร่วมกัน:
+    //   1) P/B Ratio (จากงบดุล) = ราคาต่อหุ้น / มูลค่าทางบัญชีต่อหุ้น ต้องมากกว่า 0 (ส่วนของ
+    //      ผู้ถือหุ้นเป็นบวก) และไม่เกิน MAX_VALUE_PB
+    //   2) P/E Ratio (จากงบกำไรขาดทุน) = ราคาต่อหุ้น / กำไรสุทธิต่อหุ้น ต้องมากกว่า 0 (บริษัทมี
+    //      กำไร ไม่ขาดทุน) และไม่เกิน MAX_VALUE_PE
+    //   3) P/FCF Ratio (จากงบกระแสเงินสด) = ราคาต่อหุ้น / กระแสเงินสดอิสระต่อหุ้น ต้องมากกว่า 0
+    //      (กระแสเงินสดอิสระเป็นบวก) และไม่เกิน MAX_VALUE_PFCF
+    // ดึงตัวเลขทั้ง 3 นี้มาจาก Finnhub (/stock/metric?metric=all) ดู getValueRatios/fetchFundamentals
+    const MAX_VALUE_PB = 1.5;   // P/B Ratio สูงสุดที่ถือว่า "ราคาถูก" เมื่อเทียบกับมูลค่าทางบัญชี
+    const MAX_VALUE_PE = 15;    // P/E Ratio สูงสุดที่ถือว่า "ราคาถูก" เมื่อเทียบกับกำไรสุทธิ
+    const MAX_VALUE_PFCF = 15;  // P/FCF Ratio สูงสุดที่ถือว่า "ราคาถูก" เมื่อเทียบกับกระแสเงินสดอิสระ
 
-    function isSetupEligible(cls) {
-      if (!cls) return false;
+    // ดึงค่า P/E, P/B, P/FCF ออกจาก object fundamentals ที่ได้จาก Finnhub metric=all — ใช้ pick()
+    // ลองหลายชื่อฟิลด์ที่เป็นไปได้ เผื่อ Finnhub เปลี่ยนชื่อฟิลด์หรือบางสัญลักษณ์ไม่มีบางฟิลด์
+    function getValueRatios(fundamentals) {
+      if (!fundamentals) return null;
+      const pb = pick(fundamentals, ["pbQuarterly", "pbAnnual", "ptbvQuarterly", "ptbvAnnual"]);
+      const pe = pick(fundamentals, [
+        "peTTM",
+        "peBasicExclExtraTTM",
+        "peExclExtraTTM",
+        "peInclExtraTTM",
+        "peNormalizedAnnual",
+        "peExclExtraAnnual",
+      ]);
+      const pfcf = pick(fundamentals, ["pfcfShareTTM", "pfcfShareAnnual"]);
+      return { pe, pb, pfcf };
+    }
 
-      // โมเมนตัมบวก หรือ บวกแรง ถือว่าเข้าเกณฑ์ (ไม่บังคับต้องเป็น "บวกแรง" เท่านั้นเหมือนเดิม)
-      const positiveMomentum = cls.momentum === "Strong Bullish" || cls.momentum === "Bullish";
-
-      // ไม่เอาหุ้นที่ยังอยู่ในขาลงชัดเจน (เทรนด์ลงและ EMA เรียงตัวลงชัด) แม้จะมีโมเมนตัมเข้าเกณฑ์
-      // ก็ตาม — ที่เหลือ (Sideways หรือ Uptrend ที่เพิ่งเริ่ม) ถือว่า "กำลังจะเป็นขาขึ้นรอบถัดไป" ได้
-      const notDeepDowntrend = !(cls.trend === "Downtrend" && cls.trendScore <= -2);
-
-      return positiveMomentum && notDeepDowntrend;
+    // เข้าเกณฑ์ "หุ้นดีราคาถูก" ก็ต่อเมื่อมีข้อมูลครบทั้ง 3 ตัว และทั้ง 3 ตัวเป็นบวก (ตัดบริษัทที่
+    // ขาดทุน/ส่วนผู้ถือหุ้นติดลบ/กระแสเงินสดอิสระติดลบทิ้งไปโดยอัตโนมัติ เพราะ Ratio ติดลบไม่ได้แปลว่า
+    // "ถูก" แต่แปลว่าตัวส่วนเป็นลบ) และต้องไม่เกินเกณฑ์สูงสุดที่ตั้งไว้ทั้ง 3 ข้อพร้อมกัน
+    function isValueEligible(ratios) {
+      if (!ratios) return false;
+      const { pe, pb, pfcf } = ratios;
+      if (pe == null || pb == null || pfcf == null) return false;
+      if (pe <= 0 || pb <= 0 || pfcf <= 0) return false;
+      return pe <= MAX_VALUE_PE && pb <= MAX_VALUE_PB && pfcf <= MAX_VALUE_PFCF;
     }
 
     function getCapTier(mktCapB) {
@@ -1864,35 +1802,41 @@
             )}
 
             <div className="mb-2 flex flex-wrap gap-1">
-              <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${TREND_STYLE[rec.cls.trend]}`}>
-                {TREND_TH[rec.cls.trend]}
+              <span
+                title="P/B Ratio = ราคาต่อหุ้น / มูลค่าทางบัญชีต่อหุ้น (จากงบดุล)"
+                className="text-[9px] font-bold px-1.5 py-0.5 rounded border text-sky-300 bg-sky-500/10 border-sky-500/30"
+              >
+                P/B {rec.ratios.pb.toFixed(2)}
               </span>
-              <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${MOM_STYLE[rec.cls.momentum]}`}>
-                {MOM_TH[rec.cls.momentum]}
+              <span
+                title="P/E Ratio = ราคาต่อหุ้น / กำไรสุทธิต่อหุ้น (จากงบกำไรขาดทุน)"
+                className="text-[9px] font-bold px-1.5 py-0.5 rounded border text-emerald-300 bg-emerald-500/10 border-emerald-500/30"
+              >
+                P/E {rec.ratios.pe.toFixed(2)}
+              </span>
+              <span
+                title="P/FCF Ratio = ราคาต่อหุ้น / กระแสเงินสดอิสระต่อหุ้น (จากงบกระแสเงินสด)"
+                className="text-[9px] font-bold px-1.5 py-0.5 rounded border text-violet-300 bg-violet-500/10 border-violet-500/30"
+              >
+                P/FCF {rec.ratios.pfcf.toFixed(2)}
               </span>
               {rec.capTier && (
                 <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${CAP_TIER_STYLE[rec.capTier]}`}>
                   {CAP_TIER_TH[rec.capTier]}
                 </span>
               )}
-              {rec.buzz && rec.buzz.ok && (
-                <span
-                  title={`มีการกล่าวถึงบน StockTwits ${rec.buzz.messageCount.toLocaleString()} แหล่ง — เป็นที่พูดถึงมากในวงการนักลงทุน-เทรดเดอร์`}
-                  className="text-[9px] font-bold px-1.5 py-0.5 rounded border text-pink-300 bg-pink-500/10 border-pink-500/30"
-                >
-                  🗣️ พูดถึงเยอะ ({fmtCompactNum(rec.buzz.messageCount)})
-                </span>
-              )}
             </div>
             <div className="text-[9px] text-zinc-500 mb-2.5">
-              {rec.countryMeta?.name} ({rec.region}) • RSI {rec.cls.rsi != null ? rec.cls.rsi.toFixed(1) : "—"}
-              {rec.cls.supportDistPct != null && <> • ห่างแนวรับ {rec.cls.supportDistPct.toFixed(1)}%</>}
+              {rec.countryMeta?.name} ({rec.region})
+              {rec.profile?.finnhubIndustry && <> • {rec.profile.finnhubIndustry}</>}
               {rec.mktCapB > 0 && <> • Mkt Cap ${rec.mktCapB.toFixed(1)}B</>}
             </div>
 
             <div className="bg-zinc-950/80 border border-zinc-800/80 rounded-lg p-2.5 text-[10px] text-zinc-300 min-h-[54px]">
-              <div className="text-amber-400 font-bold mb-0.5 flex items-center gap-1">💡 Catalyst</div>
-              <div className="line-clamp-3">{rec.catalyst || "หุ้นจากพูลหุ้นทั่วโลก ผ่านเกณฑ์โมเมนตัมและกระแสการพูดถึงในสัปดาห์นี้"}</div>
+              <div className="text-amber-400 font-bold mb-0.5 flex items-center gap-1">💎 หุ้นดีราคาถูก</div>
+              <div className="line-clamp-3">
+                เข้าเกณฑ์ทั้งงบดุล (P/B ≤ {MAX_VALUE_PB}), งบกำไรขาดทุน (P/E ≤ {MAX_VALUE_PE}) และงบกระแสเงินสด (P/FCF ≤ {MAX_VALUE_PFCF}) พร้อมกัน
+              </div>
             </div>
           </div>
 
@@ -1995,19 +1939,16 @@
     const WeeklyRecommendedPanel = React.memo(function WeeklyRecommendedPanel({ tdKey, fhKey, dataMap, loadSymbol, loadSymbolsBatch, loadFundamentalsOnly, symbols, onAdd }) {
       const [loading, setLoading] = useState(false);
       const [scanProgress, setScanProgress] = useState({ done: 0, total: 0, found: 0 });
-      // buzzMap เก็บผลลัพธ์ "กระแสการพูดถึง" จาก StockTwits ต่อ symbol ({ ok, watchlistCount,
-      // messageCount }) เพื่อใช้ทั้งกรองเกณฑ์ที่ 2 (กระแสการพูดถึง) และแสดงป้ายบนการ์ดหุ้นแนะนำ
-      const [buzzMap, setBuzzMap] = useState({});
-      // ถ้า StockTwits ใช้งานไม่ได้ต่อเนื่องจนถูกปิดเกณฑ์ชั่วคราว (ดู fetchStockTwitsBuzz) จะแจ้ง
-      // ผู้ใช้ตรงนี้ว่าเกณฑ์กระแสการพูดถึงกำลัง fail-open อยู่ (ยังคงเกณฑ์โมเมนตัมเดิมครบ)
-      const [buzzUnavailable, setBuzzUnavailable] = useState(false);
+      // fundamentalsMap เก็บ object metric ดิบจาก Finnhub (/stock/metric?metric=all) ต่อ symbol
+      // เพื่อใช้ทั้งกรองเกณฑ์ "หุ้นดีราคาถูก" (P/E, P/B, P/FCF — ดู getValueRatios/isValueEligible)
+      // และแสดงตัวเลขจริงบนการ์ดหุ้นแนะนำ
+      const [fundamentalsMap, setFundamentalsMap] = useState({});
 
-      // พูลหุ้นสำหรับสแกน = หุ้นกระแสที่คัดสรรไว้ล่วงหน้า (TRENDING_UNIVERSE พร้อมสตอรี่/catalyst)
-      // รวมกับหุ้นสามัญทั่วโลกอีกก้อนใหญ่ที่ดึงมาจาก Twelve Data (ดู fetchGlobalStockUniverse
-      // ด้านบน) รวมกันสูงสุด ~GLOBAL_UNIVERSE_TARGET_SIZE ตัว เพื่อขยายโอกาสเจอหุ้นที่เข้าเกณฑ์
-      // โมเมนตัม+กระแสพูดถึงให้กว้างกว่าลิสต์คัดสรรอย่างเดียว — ระหว่างที่ยังดึงไม่เสร็จ (หรือดึง
-      // ไม่สำเร็จ) จะยังไม่เริ่มสแกนจนกว่า universeReady จะเป็น true (ดู effect ด้านล่าง) เพื่อกัน
-      // ไม่ให้สแกนซ้ำสองรอบด้วยพูลคนละขนาดกัน
+      // พูลหุ้นสำหรับสแกน = หุ้นที่คัดสรรไว้ล่วงหน้า (TRENDING_UNIVERSE) รวมกับหุ้นสามัญทั่วโลก
+      // อีกก้อนใหญ่ที่ดึงมาจาก Twelve Data (ดู fetchGlobalStockUniverse ด้านบน) รวมกันสูงสุด
+      // ~GLOBAL_UNIVERSE_TARGET_SIZE ตัว เพื่อขยายโอกาสเจอหุ้นที่เข้าเกณฑ์มูลค่าให้กว้างกว่าลิสต์
+      // คัดสรรอย่างเดียว — ระหว่างที่ยังดึงไม่เสร็จ (หรือดึงไม่สำเร็จ) จะยังไม่เริ่มสแกนจนกว่า
+      // universeReady จะเป็น true (ดู effect ด้านล่าง) เพื่อกันไม่ให้สแกนซ้ำสองรอบด้วยพูลคนละขนาดกัน
       const [globalUniverse, setGlobalUniverse] = useState(null);
       const [universeReady, setUniverseReady] = useState(false);
 
@@ -2056,7 +1997,7 @@
       }, [universe]);
 
       const scanCandidates = useCallback(async () => {
-        if (!tdKey) return;
+        if (!fhKey) return; // เกณฑ์ "หุ้นดีราคาถูก" อิงงบการเงินจาก Finnhub ล้วน ๆ จึงต้องมี Finnhub key ก่อนสแกนได้
         setLoading(true);
         const rotationPool = today.rotation;
 
@@ -2067,19 +2008,18 @@
           const locked = await loadStore(WEEKLY_PICKS_STORE_KEY, null);
           if (locked && locked.weekKey === today.weekKey && Array.isArray(locked.symbols) && locked.symbols.length > 0) {
             setScanProgress({ done: locked.symbols.length, total: locked.symbols.length, found: locked.symbols.length });
-            // ใช้ loadSymbolsBatch แทน loadSymbol ทีละตัว — ชุดหุ้นที่ล็อกไว้มีไม่เกิน SCAN_BUFFER
-            // ตัวอยู่แล้ว จึงยิงเป็นคำขอเดียว (หรือไม่กี่คำขอ) แทนที่จะเข้าคิว tdQueue ทีละตัว
-            await loadSymbolsBatch(locked.symbols, DEFAULT_TIMEFRAME);
-            if (fhKey && loadFundamentalsOnly) {
+            // ดึงงบการเงิน (Finnhub) ของชุดหุ้นที่ล็อกไว้แล้วมาแสดงตัวเลข P/E, P/B, P/FCF จริงบน
+            // การ์ด (ไม่ต้องกรองซ้ำ เพราะสัปดาห์นี้ผ่านเกณฑ์ครบทั้ง 3 ข้อไปแล้วตอนสแกนครั้งแรก)
+            const fundEntries = await Promise.all(
+              locked.symbols.map(async (sym) => [sym, await fetchFundamentals(sym, fhKey).catch(() => null)])
+            );
+            setFundamentalsMap(Object.fromEntries(fundEntries));
+            // ดึงราคา/กราฟล่าสุด (Twelve Data) และโปรไฟล์บริษัท (ชื่อ, โลโก้, อุตสาหกรรม, Market Cap)
+            // ของชุดหุ้นที่ล็อกไว้ เพื่อแสดงผลบนการ์ด
+            if (tdKey) await loadSymbolsBatch(locked.symbols, DEFAULT_TIMEFRAME);
+            if (loadFundamentalsOnly) {
               await Promise.all(locked.symbols.map((sym) => loadFundamentalsOnly(sym)));
             }
-            // ดึงข้อมูล "กระแสการพูดถึง" จาก StockTwits ของชุดหุ้นที่ล็อกไว้แล้วมาแสดงเป็นป้ายบน
-            // การ์ด (ไม่ต้องกรองซ้ำ เพราะสัปดาห์นี้ผ่านเกณฑ์ทั้ง 2 ข้อไปแล้วตอนสแกนครั้งแรก)
-            const buzzEntries = await Promise.all(
-              locked.symbols.map(async (sym) => [sym, await fetchStockTwitsBuzz(sym)])
-            );
-            setBuzzMap(Object.fromEntries(buzzEntries));
-            setBuzzUnavailable(stBuzzDisabledThisSession);
             return;
           }
 
@@ -2088,83 +2028,49 @@
           let doneCount = 0;
           let foundCount = 0;
           const foundSymbols = [];
-          const buzzResults = {}; // สะสมผลลัพธ์ StockTwits ของทุกตัวที่เช็กระหว่างสแกนรอบนี้
+          const fundResults = {}; // สะสมผล metric ของทุกตัวที่เช็กระหว่างสแกนรอบนี้
 
-          // รอบที่ 1: เช็คเฉพาะหุ้นที่มีข้อมูล (series) แคชสดอยู่ในเครื่องแล้ว — ไม่ต้องยิง API เลย
-          // (เฉพาะตัวที่ผ่านเกณฑ์โมเมนตัมก่อน ถึงจะเรียก StockTwits ต่อเพื่อเช็กเกณฑ์กระแสพูดถึง
-          // เป็นการประหยัดโควตา/รอบเรียก API ฟรีนี้ ไม่ต้องยิงให้ทุกตัวในพูล)
-          for (const item of rotationPool) {
-            const cached = dataMap[item.symbol];
-            if (cached && cached.series && cached.series.length >= 20) {
-              const cls = classifyCached(cached.series);
-              if (isSetupEligible(cls)) {
-                const buzz = await fetchStockTwitsBuzz(item.symbol);
-                buzzResults[item.symbol] = buzz;
-                if (isBuzzEligible(buzz)) foundSymbols.push(item.symbol);
+          // ไล่สแกนเป็น "ก้อน" (batch) ทีละ FUND_SCAN_BATCH_SIZE ตัว — ยิง Finnhub metric พร้อมกัน
+          // หลายสัญลักษณ์ต่อรอบ (fhQueue ยังคุมจังหวะยิงจริงไม่ให้เกิน fhMinIntervalMs/คำขอเหมือนเดิม
+          // ทุกประการ แค่ไม่ต้อง await ทีละตัวตามลำดับ) แล้วหยุดทันทีเมื่อพบครบ SCAN_BUFFER ตัว
+          // (Fast Stop) เพื่อประหยัดโควตา Finnhub ไม่ต้องไล่สแกนพูลทั้ง 3,000 ตัวเสมอไป
+          outer:
+          for (let i = 0; i < rotationPool.length; i += FUND_SCAN_BATCH_SIZE) {
+            if (foundCount >= SCAN_BUFFER) break;
+
+            const batchItems = rotationPool.slice(i, i + FUND_SCAN_BATCH_SIZE);
+            const metrics = await Promise.all(
+              batchItems.map((it) => fetchFundamentals(it.symbol, fhKey).catch(() => null))
+            );
+
+            for (let j = 0; j < batchItems.length; j++) {
+              const item = batchItems[j];
+              const fundamentals = metrics[j];
+              doneCount++;
+              fundResults[item.symbol] = fundamentals;
+
+              const ratios = getValueRatios(fundamentals);
+              if (isValueEligible(ratios)) {
+                foundSymbols.push(item.symbol);
+                foundCount++;
+              }
+
+              if (foundCount >= SCAN_BUFFER) {
+                console.log(`[Scanner] พบหุ้นเข้าเกณฑ์ครบ ${SCAN_BUFFER} ตัวแล้ว หยุดการสแกนทันที (ประหยัดโควตา API)`);
+                break outer;
               }
             }
+            setScanProgress({ done: doneCount, total: rotationPool.length, found: foundCount });
           }
-          foundCount = foundSymbols.length;
+          setScanProgress({ done: doneCount, total: rotationPool.length, found: foundCount });
 
-          // หากพบครบตามเป้า (SCAN_BUFFER) จากแคชอยู่แล้ว ไม่ต้องสแกนเพิ่มเลย
-          if (foundCount < SCAN_BUFFER) {
-            // รอบที่ 2: ไล่สแกนเป็น "ก้อน" (batch) ทีละ SCAN_BATCH_SIZE ตัว แทนการยิงทีละสัญลักษณ์
-            // ---------------------------------------------------------------------------------
-            // เดิมโค้ดตรงนี้เรียก loadSymbol() ทีละตัวแล้ว await รอคิว tdQueue ก่อนไปตัวถัดไป ซึ่ง
-            // บนแพ็กเกจฟรี Twelve Data (~7.7 วินาที/คำขอ) ทำให้ไล่สแกนพูล 4,000 ตัวได้ช้ามาก (ผู้ใช้
-            // เจอว่าสแกนไปได้แค่ ~200 ตัวแล้วยังไม่จบ) ตอนนี้เปลี่ยนมาใช้ loadSymbolsBatch() ที่รวม
-            // หลายสัญลักษณ์เป็น "1 คำขอ HTTP" ต่อคิว (ดูคำอธิบายเต็มที่ตัวฟังก์ชันใน App component)
-            // ทำให้เวลารอคิวโดยรวมลดลงเหลือประมาณ 1/SCAN_BATCH_SIZE ของเดิม — ยังคง "ข้ามการดึง
-            // ข้อมูลพื้นฐาน (Finnhub) ระหว่างสแกน" เหมือนเดิมทุกประการเพื่อประหยัดโควตา Finnhub
-            const foundSet = new Set(foundSymbols);
-            const remaining = rotationPool.filter((item) => !foundSet.has(item.symbol));
-
-            outer:
-            for (let i = 0; i < remaining.length; i += SCAN_BATCH_SIZE) {
-              if (foundCount >= SCAN_BUFFER) break;
-
-              const batchItems = remaining.slice(i, i + SCAN_BATCH_SIZE);
-              // ยิงทั้งก้อนพร้อมกันเป็นคำขอเดียว (หรือไม่กี่คำขอถ้าบางตัวแคชสดอยู่แล้ว) แทนการรอคิว
-              // ทีละสัญลักษณ์ — ยังคืนค่าตรง ๆ กลับมาเหมือน loadSymbol เดิม ไม่ต้องพึ่ง state ของ
-              // React ที่เป็น async จึงเช็คเงื่อนไข "เจอครบ SCAN_BUFFER หรือยัง" ได้ถูกต้องทันที
-              const entryMap = await loadSymbolsBatch(batchItems.map((it) => it.symbol), DEFAULT_TIMEFRAME);
-
-              for (const item of batchItems) {
-                const entry = entryMap[item.symbol];
-                doneCount++;
-
-                if (entry && entry.series && entry.series.length >= 20) {
-                  const cls = classifyCached(entry.series);
-                  if (isSetupEligible(cls)) {
-                    const buzz = await fetchStockTwitsBuzz(item.symbol);
-                    buzzResults[item.symbol] = buzz;
-                    if (isBuzzEligible(buzz)) {
-                      foundSet.add(item.symbol);
-                      foundSymbols.push(item.symbol);
-                      foundCount++;
-                    }
-                  }
-                }
-
-                if (foundCount >= SCAN_BUFFER) {
-                  console.log(`[Scanner] พบหุ้นเข้าเกณฑ์ครบ ${SCAN_BUFFER} ตัวแล้ว หยุดการสแกนทันที (ประหยัดโควตา API)`);
-                  setScanProgress({ done: doneCount, total: rotationPool.length, found: foundCount });
-                  break outer;
-                }
-              }
-              setScanProgress({ done: doneCount, total: rotationPool.length, found: foundCount });
-            }
-          } else {
-            setScanProgress({ done: rotationPool.length, total: rotationPool.length, found: foundCount });
+          // ดึงราคา/กราฟล่าสุด (Twelve Data) และโปรไฟล์บริษัท (Finnhub profile2 — ชื่อ, โลโก้,
+          // อุตสาหกรรม, Market Cap) เฉพาะหุ้นที่ "ผ่านเกณฑ์แล้วเท่านั้น" เพื่อแสดงผลบนการ์ด — ลด
+          // จำนวนเรียก API จากหลักพันเหลือแค่หลักสิบ (เท่าจำนวนหุ้นที่ผ่านเกณฑ์จริง) ต่อรอบสแกน
+          if (tdKey && foundSymbols.length > 0) {
+            await loadSymbolsBatch(foundSymbols, DEFAULT_TIMEFRAME);
           }
-
-          // รอบที่ 3: ดึงข้อมูลพื้นฐาน (Finnhub) เฉพาะหุ้นที่ "ผ่านเกณฑ์แล้วเท่านั้น" เพื่อทราบ
-          // Market Cap สำหรับจัดกลุ่ม Small/Mid/Large Cap — ลดจำนวนเรียก Finnhub จากหลักพันเหลือ
-          // แค่หลักสิบ (เท่าจำนวนหุ้นที่ผ่านเกณฑ์จริง) ต่อรอบสแกน
-          // ยิงทุกตัวพร้อมกัน (Promise.all) แทนการ await ทีละตัวตามลำดับ — fhQueue ยังคุมอัตรา
-          // การยิงจริงให้ไม่เกิน fhMinIntervalMs ต่อคำขอเหมือนเดิมทุกประการ แค่ตัดเวลารอผลลัพธ์
-          // (network round-trip) ที่เคยต้องต่อคิวกันทีละตัวออกไป ทำให้รอบนี้เสร็จเร็วขึ้น
-          if (fhKey && loadFundamentalsOnly && foundSymbols.length > 0) {
+          if (loadFundamentalsOnly && foundSymbols.length > 0) {
             await Promise.all(foundSymbols.map((sym) => loadFundamentalsOnly(sym)));
           }
 
@@ -2176,12 +2082,11 @@
             symbols: foundSymbols,
             savedAt: Date.now(),
           });
-          setBuzzMap((prev) => ({ ...prev, ...buzzResults }));
-          setBuzzUnavailable(stBuzzDisabledThisSession);
+          setFundamentalsMap((prev) => ({ ...prev, ...fundResults }));
         } finally {
           setLoading(false);
         }
-      }, [tdKey, fhKey, today, loadSymbolsBatch, loadFundamentalsOnly, dataMap]);
+      }, [tdKey, fhKey, today, loadSymbolsBatch, loadFundamentalsOnly]);
 
       useEffect(() => {
         // รอให้พูลหุ้นทั่วโลก (ดู fetchGlobalStockUniverse) โหลดเสร็จก่อนเสมอ (หรือ fail-open
@@ -2195,45 +2100,35 @@
       const recommended = useMemo(() => {
         const candidates = [];
         for (const item of today.rotation) {
+          const fundamentals = fundamentalsMap[item.symbol];
+          const ratios = getValueRatios(fundamentals);
+          if (!isValueEligible(ratios)) continue;
           const entry = dataMap[item.symbol];
-          if (!entry || !entry.series || entry.series.length < 20) continue;
-          const cls = classifyCached(entry.series);
-          if (!isSetupEligible(cls)) continue;
-          const buzz = buzzMap[item.symbol];
-          if (!isBuzzEligible(buzz)) continue; // เกณฑ์ที่ 3: ต้องเป็นหุ้นที่กระแสการพูดถึงสูงพอด้วย
-          const mktCapB = ((pick(entry.fundamentals, ["marketCapitalization"]) || entry.profile?.marketCapitalization || 0) * 1e6) / 1e9;
+          const mktCapB = ((pick(fundamentals, ["marketCapitalization"]) || entry?.profile?.marketCapitalization || 0) * 1e6) / 1e9;
           const countryMeta = getCountryMeta(item.country);
           candidates.push({
             ...item,
-            cls,
-            buzz,
+            ratios,
+            fundamentals,
             mktCapB,
             capTier: getCapTier(mktCapB),
             countryMeta,
             region: countryMeta.region,
-            quote: entry.quote,
-            profile: entry.profile,
+            quote: entry?.quote,
+            profile: entry?.profile,
           });
         }
 
-        // เรียงตามความแข็งแรงของสัญญาณรวม 2 ด้าน: โมเมนตัม RSI/Trend (ยิ่งบวกแรงยิ่งดี ให้คะแนน
-        // เสริมพิเศษถ้าเป็น "Strong Bullish" มากกว่า "Bullish" ธรรมดา) + กระแสการพูดถึงบน StockTwits
-        // (ยิ่งมีคนพูดถึง/กล่าวถึงจากหลายแหล่งยิ่งได้คะแนนเสริม แต่มีน้ำหนักน้อยกว่าสัญญาณโมเมนตัม
-        // เพื่อไม่ให้หุ้นดังล้วน ๆ แต่โมเมนตัมอ่อนแซงหน้าหุ้นที่โมเมนตัมแข็งแกร่งกว่าไปได้ — ใช้ log
-        // ฐาน 10 บีบสเกลตัวเลขจำนวนข้อความที่ห่างกันมากให้เทียบกันได้)
-        const strength = (c) => {
-          const cls = c.cls;
-          const momentumTierBonus = cls.momentum === "Strong Bullish" ? 1 : cls.momentum === "Bullish" ? 0.3 : 0;
-          const momentumScore = cls.trendScore + (cls.rsi || 0) / 100 + momentumTierBonus;
-          const buzzScore = c.buzz && c.buzz.ok ? Math.log10(1 + c.buzz.messageCount) / 2 : 0;
-          return momentumScore + buzzScore;
+        // เรียงจาก "ถูกที่สุด" ก่อนเสมอ — รวมสัดส่วนของ P/E, P/B, P/FCF เทียบกับเกณฑ์สูงสุดของ
+        // แต่ละตัว (MAX_VALUE_PE/PB/PFCF) เข้าด้วยกัน ยิ่งผลรวมน้อย ยิ่งแปลว่า "ถูก" เมื่อเทียบกับ
+        // เกณฑ์ทั้ง 3 งบพร้อมกัน (ไม่ให้ตัวใดตัวหนึ่งมีน้ำหนักเกินตัวอื่นเพราะหน่วยตัวเลขต่างกัน)
+        const cheapness = (c) => {
+          const { pe, pb, pfcf } = c.ratios;
+          return pe / MAX_VALUE_PE + pb / MAX_VALUE_PB + pfcf / MAX_VALUE_PFCF;
         };
-        // คัดหุ้นแนะนำสุดท้ายด้วยการเรียงตามความแข็งแรงของสัญญาณล้วน ๆ (ไม่บังคับคละ Cap Tier /
-        // ภูมิภาค / อุตสาหกรรมอีกต่อไป) — หุ้นที่สัญญาณ "โมเมนตัมบวก-บวกแรง + กระแสการพูดถึงสูง"
-        // แข็งแกร่งที่สุดในพูลหุ้นทั่วโลกจะถูกเลือกก่อนเสมอ
-        candidates.sort((a, b) => strength(b) - strength(a));
+        candidates.sort((a, b) => cheapness(a) - cheapness(b));
         return candidates.slice(0, WEEKLY_PICK_COUNT);
-      }, [today, dataMap, buzzMap]);
+      }, [today, dataMap, fundamentalsMap]);
 
       return (
         <div className="bg-gradient-to-r from-amber-500/10 via-zinc-900 to-emerald-500/10 border border-amber-500/30 rounded-lg p-4 space-y-4">
@@ -2241,11 +2136,10 @@
             <div>
               <div className="flex items-center gap-2 text-amber-400 font-bold text-base">
                 <Zap className="fill-amber-400" size={18} />
-                <span>หุ้นแนะนำประจำสัปดาห์ 🔥 หุ้นกระแส ({WEEKLY_PICK_COUNT} ตัว)</span>
+                <span>หุ้นแนะนำประจำสัปดาห์ 💎 หุ้นดีราคาถูก ({WEEKLY_PICK_COUNT} ตัว)</span>
               </div>
               <div className="text-xs text-zinc-400 mt-0.5">
-                เกณฑ์: โมเมนตัมบวก-บวกแรง + กระแสพูดถึงสูงบน{" "}
-                <a href="https://stocktwits.com" target="_blank" rel="noopener noreferrer" className="underline hover:text-pink-300">StockTwits</a>
+                เกณฑ์: P/B Ratio ≤ {MAX_VALUE_PB} (งบดุล) + P/E Ratio ≤ {MAX_VALUE_PE} (งบกำไรขาดทุน) + P/FCF Ratio ≤ {MAX_VALUE_PFCF} (งบกระแสเงินสด) จากพูลหุ้นทั่วโลก ~3,000 ตัว
               </div>
             </div>
             <div className="flex items-center gap-2">
@@ -2255,20 +2149,20 @@
             </div>
           </div>
 
-          {!tdKey && (
+          {!fhKey && (
             <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-2.5 text-[11px] text-amber-300 flex items-start gap-2">
               <span>⚠️</span>
               <span>
-                ต้องตั้งค่า <strong>Twelve Data API Key</strong> ก่อน จึงจะสแกนเพื่อหาหุ้นแนะนำประจำสัปดาห์ได้ — ตั้งค่าได้ที่เมนู ⚙ มุมขวาบน
+                ต้องตั้งค่า <strong>Finnhub API Key</strong> ก่อน (ใช้ดึงงบดุล/งบกำไรขาดทุน/งบกระแสเงินสด) จึงจะสแกนเพื่อหาหุ้นแนะนำประจำสัปดาห์ได้ — ตั้งค่าได้ที่เมนู ⚙ มุมขวาบน
               </span>
             </div>
           )}
 
-          {buzzUnavailable && (
+          {fhKey && !tdKey && (
             <div className="bg-zinc-800/60 border border-zinc-700 rounded-lg p-2.5 text-[11px] text-zinc-400 flex items-start gap-2">
               <span>ℹ️</span>
               <span>
-                เชื่อมต่อ StockTwits เพื่อเช็กกระแสการพูดถึงไม่สำเร็จในตอนนี้ (อาจเป็นเพราะเครือข่ายหรือ CORS) — ระบบจึงข้ามเกณฑ์กระแสการพูดถึงชั่วคราวในเซสชันนี้ และยังคงใช้เกณฑ์โมเมนตัมเดิมครบ
+                ยังไม่ได้ตั้งค่า <strong>Twelve Data API Key</strong> — พูลหุ้นสำหรับสแกนจะใช้แค่ลิสต์คัดสรรไว้ล่วงหน้า (TRENDING_UNIVERSE) และจะไม่แสดงราคา/กราฟล่าสุดบนการ์ด
               </span>
             </div>
           )}
@@ -2281,9 +2175,9 @@
 
           {!loading && recommended.length === 0 && (
             <div className="text-xs text-zinc-500 text-center py-6">
-              {tdKey
-                ? "ยังไม่พบหุ้นที่ตรงเกณฑ์ โมเมนตัมบวก-บวกแรง + กระแสพูดถึงสูง ในสัปดาห์นี้"
-                : "กรุณาตั้งค่า Twelve Data API Key เพื่อเริ่มใช้งานหุ้นแนะนำประจำสัปดาห์"}
+              {fhKey
+                ? "ยังไม่พบหุ้นที่ตรงเกณฑ์ P/B, P/E และ P/FCF ในสัปดาห์นี้"
+                : "กรุณาตั้งค่า Finnhub API Key เพื่อเริ่มใช้งานหุ้นแนะนำประจำสัปดาห์"}
             </div>
           )}
 
