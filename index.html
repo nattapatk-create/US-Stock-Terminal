@@ -1274,8 +1274,10 @@
        หากดึงรายชื่อทั่วโลกไม่สำเร็จ (ไม่มี Twelve Data API Key หรือเครือข่ายมีปัญหา) ระบบจะ
        "fail-open" กลับไปใช้แค่ TRENDING_UNIVERSE ไปก่อน เพื่อไม่ให้ทั้งฟีเจอร์หุ้นแนะนำใช้งานไม่ได้
        เลยเพียงเพราะพูลส่วนขยายนี้โหลดไม่สำเร็จชั่วคราว
-       จากนั้นตัวสแกนจะกรองอีกชั้นด้วยเกณฑ์ "หุ้นดีราคาถูก" 3 ข้อจากงบการเงินจริง (ดู
-       isValueEligible ด้านล่าง): P/E Ratio, P/B Ratio และ P/FCF Ratio
+       จากนั้นตัวสแกนจะกรองอีกชั้นด้วยเกณฑ์ "หุ้นเทรนด์ขาขึ้น" จากราคา/ปริมาณซื้อขายรายวันจริง (ดู
+       computeTechnicalSignal ด้านล่าง): Volume Surge เทียบค่าเฉลี่ย 20 วัน + ราคาอยู่เหนือ MA20/MA50
+       พร้อมโมเมนตัมต่อเนื่อง 1-4 สัปดาห์ จากนั้นเสริมคะแนนด้วยกระแสข่าว (Finnhub company-news) และ
+       แนวโน้มพื้นฐาน (Revenue/EPS Growth)
        ============================================================ */
 
     function pick(obj, keys) {
@@ -1685,60 +1687,189 @@
     // 1. แนะนำสุดท้าย 10 ตัว
     // 2. Pool = TRENDING_UNIVERSE ที่คัดสรรไว้ล่วงหน้า รวมกับหุ้นทั่วโลกจาก Twelve Data (ดูหัวข้อ
     //    STOCK UNIVERSE ด้านบน) รวมกันสูงสุด ~3,000 ตัว กระจายทุกอุตสาหกรรม/ทุกประเทศ
-    // 3. สแกนจนพบหุ้นที่เข้าเกณฑ์ครบ SCAN_BUFFER ตัวแล้วให้ "หยุดสแกนทันที" (Fast Stop) — เผื่อ
-    //    ตัวเลือกไว้มากกว่า 10 เล็กน้อย จากนั้นคัด 10 ตัวสุดท้ายด้วยการเรียงจาก "ถูกที่สุด" ก่อน
-    //    (ผลรวมของ P/E, P/B, P/FCF เทียบกับเกณฑ์สูงสุดของแต่ละตัว ยิ่งน้อยยิ่งถูก)
+    // 3. เกณฑ์ทางเทคนิค (Volume Surge + โมเมนตัมราคาเหนือ MA20/MA50 ต่อเนื่อง) เป็นเกณฑ์บังคับหลัก
+    //    ที่ต้องผ่านครบทั้งคู่ก่อนถึงจะเข้ารอบ จากนั้นให้คะแนนเสริมจากกระแสข่าว/ปัจจัยพื้นฐาน แล้วคัด
+    //    WEEKLY_PICK_COUNT ตัวสุดท้ายด้วยคะแนนรวมสูงสุด (ดู computeTrendScore) — สแกนจนพบผู้เข้าเกณฑ์
+    //    ทางเทคนิคครบ SCAN_BUFFER ตัวแล้วให้ "หยุดสแกนทันที" (Fast Stop) เพื่อประหยัดโควตา Twelve
+    //    Data ไม่ต้องไล่สแกนพูลทั้งหมดเสมอไป
     const WEEKLY_PICK_COUNT = 10;
     const SCAN_BUFFER = 30;
-    // จำนวนสัญลักษณ์ที่ยิงคำขอ Finnhub metric พร้อมกันต่อรอบระหว่างสแกน (fhQueue ยังคุมจังหวะยิง
-    // จริงไม่ให้เกิน fhMinIntervalMs/คำขออยู่ดี ค่านี้แค่กำหนดว่าเช็ค scanProgress/Fast-Stop ถี่แค่ไหน)
+    // จำนวนสัญลักษณ์ที่ยิงคำขอ Twelve Data /time_series (รายวัน) พร้อมกันต่อ batch ระหว่างสแกน
+    // เกณฑ์ทางเทคนิค (1 คำขอ HTTP ต่อก้อน แต่เสีย credit ตามจำนวนสัญลักษณ์ข้างในเท่าเดิม)
+    const TECH_SCAN_BATCH_SIZE = 30;
+    // จำนวนสัญลักษณ์ที่ยิง Finnhub (metric + company-news) พร้อมกันต่อรอบ สำหรับหุ้นที่ผ่านเกณฑ์
+    // ทางเทคนิคแล้วเท่านั้น (fhQueue ยังคุมจังหวะยิงจริงไม่ให้เกิน fhMinIntervalMs/คำขออยู่ดี)
     const FUND_SCAN_BATCH_SIZE = 10;
     // เก็บ "ผลสแกน" (ลิสต์หุ้นที่เข้าเกณฑ์) ของแต่ละสัปดาห์ไว้ใน localStorage โดยคีย์ด้วย weekKey
     // เพื่อให้สแกนพูลทั้งหมดแค่ "ครั้งเดียวต่อสัปดาห์" — เปิดเว็บใหม่หรือสลับแท็บกี่ครั้งก็ตาม
     // จะไม่ไล่สแกนพูลซ้ำอีก จนกว่าจะขึ้นสัปดาห์ใหม่ (weekKey เปลี่ยน) ถึงจะสแกนชุดใหม่โดยอัตโนมัติ
-    // อัปเดตเวอร์ชันคีย์เป็น v6 เพื่อล้างผลสแกนสัปดาห์เก่าที่คัดมาด้วยเกณฑ์โมเมนตัม+กระแสพูดถึงทิ้งไป
-    // โดยอัตโนมัติ — บังคับให้สแกนใหม่ทั้งพูลด้วยเกณฑ์ "หุ้นดีราคาถูก" ชุดใหม่ในครั้งถัดไป
-    const WEEKLY_PICKS_STORE_KEY = "us-dash-weekly-picks-v6";
+    // อัปเดตเวอร์ชันคีย์เป็น v7 เพื่อล้างผลสแกนสัปดาห์เก่าที่คัดด้วยเกณฑ์ "หุ้นดีราคาถูก" (P/E, P/B,
+    // P/FCF) ทิ้งไปโดยอัตโนมัติ — บังคับให้สแกนใหม่ทั้งพูลด้วยเกณฑ์ "หุ้นเทรนด์ขาขึ้น" ชุดใหม่ทันที
+    const WEEKLY_PICKS_STORE_KEY = "us-dash-weekly-picks-v7";
 
-    // เกณฑ์การคัดกรองหุ้นแนะนำสุดท้าย — "หุ้นดีราคาถูก" เลือกจากพูลหุ้นทั่วโลก (ดูหัวข้อ STOCK
-    // UNIVERSE ด้านบน) โดยอิงจากงบการเงินจริง 3 งบ ต้องเข้าเกณฑ์ครบทั้ง 3 ข้อร่วมกัน:
-    //   1) P/B Ratio (จากงบดุล) = ราคาต่อหุ้น / มูลค่าทางบัญชีต่อหุ้น ต้องมากกว่า 0 (ส่วนของ
-    //      ผู้ถือหุ้นเป็นบวก) และไม่เกิน MAX_VALUE_PB
-    //   2) P/E Ratio (จากงบกำไรขาดทุน) = ราคาต่อหุ้น / กำไรสุทธิต่อหุ้น ต้องมากกว่า 0 (บริษัทมี
-    //      กำไร ไม่ขาดทุน) และไม่เกิน MAX_VALUE_PE
-    //   3) P/FCF Ratio (จากงบกระแสเงินสด) = ราคาต่อหุ้น / กระแสเงินสดอิสระต่อหุ้น ต้องมากกว่า 0
-    //      (กระแสเงินสดอิสระเป็นบวก) และไม่เกิน MAX_VALUE_PFCF
-    // ดึงตัวเลขทั้ง 3 นี้มาจาก Finnhub (/stock/metric?metric=all) ดู getValueRatios/fetchFundamentals
-    const MAX_VALUE_PB = 1.5;   // P/B Ratio สูงสุดที่ถือว่า "ราคาถูก" เมื่อเทียบกับมูลค่าทางบัญชี
-    const MAX_VALUE_PE = 15;    // P/E Ratio สูงสุดที่ถือว่า "ราคาถูก" เมื่อเทียบกับกำไรสุทธิ
-    const MAX_VALUE_PFCF = 15;  // P/FCF Ratio สูงสุดที่ถือว่า "ราคาถูก" เมื่อเทียบกับกระแสเงินสดอิสระ
+    /* ------------------------------------------------------------
+       เกณฑ์การคัดกรองหุ้นแนะนำประจำสัปดาห์ — "หุ้นกำลังเป็นเทรนด์ (Trending)" ที่มีโอกาสอยู่ในขาขึ้น
+       รอบถัดไป คัดจากพูลหุ้นทั่วโลก (ดูหัวข้อ STOCK UNIVERSE ด้านบน) ต้องผ่านเกณฑ์ทางเทคนิค (ข้อ 1-2)
+       ให้ครบทั้งคู่ก่อนถึงจะเข้ารอบ จากนั้นข้อ 3-4 ใช้เป็นคะแนนเสริมจัดอันดับ และข้อ 5 ใช้แสดงเป็น
+       คำเตือนความเสี่ยงบนการ์ด (ไม่ใช่เกณฑ์คัดออก):
+         1) ปริมาณการซื้อขาย (Volume) — ปริมาณซื้อขายล่าสุด (รายวัน) ต้องสูงกว่าค่าเฉลี่ย 20 วันก่อน
+            หน้าอย่างน้อย VOLUME_SURGE_MULTIPLIER เท่า (ดู computeTechnicalSignal)
+         2) โมเมนตัมราคา — ราคาต้องอยู่เหนือเส้นค่าเฉลี่ยเคลื่อนที่ 20 วัน (MA20) และ 50 วัน (MA50)
+            พร้อมกัน และต้องปรับตัวขึ้นต่อเนื่องในช่วง 1-4 สัปดาห์ที่ผ่านมา
+         3) ความสนใจจากนักลงทุน — จำนวนข่าวบริษัท (Finnhub /company-news) ในช่วง 7 วันที่ผ่านมา ยิ่ง
+            มากยิ่งได้คะแนนเสริมสูง (ระบบนี้ไม่มี API เชื่อมโซเชียล/ฟอรัมลงทุนโดยตรง จึงใช้ปริมาณข่าว
+            จาก Finnhub เป็นตัวแทนความสนใจของนักลงทุนแทน)
+         4) ปัจจัยพื้นฐาน — แนวโน้มรายได้ (Revenue Growth) หรือกำไร (EPS Growth) เป็นบวก (จาก Finnhub
+            /stock/metric) ให้คะแนนเสริม รวมถึง sector/catalyst ที่คัดสรรไว้ล่วงหน้าใน TRENDING_UNIVERSE
+         5) ความเสี่ยง — คำนวณความผันผวนรายวัน (annualized) และเทียบ P/E กับเกณฑ์ทั่วไป เพื่อติดป้าย
+            เตือนบนการ์ด (ดู getRiskFlags) ให้ผู้ใช้พิจารณาเอง ไม่ได้ใช้คัดหุ้นออกจากลิสต์
+       ------------------------------------------------------------ */
+    const VOLUME_SURGE_MULTIPLIER = 1.5;   // ปริมาณซื้อขายล่าสุดต้องสูงกว่าค่าเฉลี่ย 20 วันอย่างน้อยกี่เท่า
+    const MOMENTUM_WEEKS = 4;              // จำนวนสัปดาห์ย้อนหลังที่ใช้เช็คโมเมนตัมต่อเนื่อง
+    const TRADING_DAYS_PER_WEEK = 5;       // ใช้แปลง "สัปดาห์" เป็นจำนวนแท่งราคารายวัน
+    const MIN_POSITIVE_WEEKS = 3;          // จาก MOMENTUM_WEEKS สัปดาห์ ต้องเป็นสัปดาห์บวกอย่างน้อยกี่สัปดาห์
+    const NEWS_LOOKBACK_DAYS = 7;          // นับข่าวบริษัทกี่วันย้อนหลังเป็น "กระแสความสนใจ"
+    const RISK_HIGH_VOLATILITY_PCT = 60;   // ความผันผวนรายปี (annualized) เกินกี่% ถือว่า "ผันผวนสูง"
+    const RISK_HIGH_PE = 40;               // P/E TTM เกินกี่เท่า ถือว่า "สูงกว่าค่าเฉลี่ยอุตสาหกรรมทั่วไป"
 
-    // ดึงค่า P/E, P/B, P/FCF ออกจาก object fundamentals ที่ได้จาก Finnhub metric=all — ใช้ pick()
-    // ลองหลายชื่อฟิลด์ที่เป็นไปได้ เผื่อ Finnhub เปลี่ยนชื่อฟิลด์หรือบางสัญลักษณ์ไม่มีบางฟิลด์
-    function getValueRatios(fundamentals) {
-      if (!fundamentals) return null;
-      const pb = pick(fundamentals, ["pbQuarterly", "pbAnnual", "ptbvQuarterly", "ptbvAnnual"]);
-      const pe = pick(fundamentals, [
-        "peTTM",
-        "peBasicExclExtraTTM",
-        "peExclExtraTTM",
-        "peInclExtraTTM",
-        "peNormalizedAnnual",
-        "peExclExtraAnnual",
-      ]);
-      const pfcf = pick(fundamentals, ["pfcfShareTTM", "pfcfShareAnnual"]);
-      return { pe, pb, pfcf };
+    // ค่าเฉลี่ยเคลื่อนที่แบบ SMA ธรรมดา (ไม่ใช่ EMA) ตามที่เกณฑ์ระบุ "เส้นค่าเฉลี่ยเคลื่อนที่ 20/50 วัน"
+    // — คืนค่าเฉพาะจุดสุดท้าย (ไม่ต้องคำนวณทั้งอาเรย์) เพื่อความเร็วระหว่างสแกนพูลขนาดใหญ่
+    function smaLast(values, period) {
+      if (!values || values.length < period) return null;
+      const slice = values.slice(values.length - period);
+      const sum = slice.reduce((a, b) => a + b, 0);
+      return sum / period;
     }
 
-    // เข้าเกณฑ์ "หุ้นดีราคาถูก" ก็ต่อเมื่อมีข้อมูลครบทั้ง 3 ตัว และทั้ง 3 ตัวเป็นบวก (ตัดบริษัทที่
-    // ขาดทุน/ส่วนผู้ถือหุ้นติดลบ/กระแสเงินสดอิสระติดลบทิ้งไปโดยอัตโนมัติ เพราะ Ratio ติดลบไม่ได้แปลว่า
-    // "ถูก" แต่แปลว่าตัวส่วนเป็นลบ) และต้องไม่เกินเกณฑ์สูงสุดที่ตั้งไว้ทั้ง 3 ข้อพร้อมกัน
-    function isValueEligible(ratios) {
-      if (!ratios) return false;
-      const { pe, pb, pfcf } = ratios;
-      if (pe == null || pb == null || pfcf == null) return false;
-      if (pe <= 0 || pb <= 0 || pfcf <= 0) return false;
-      return pe <= MAX_VALUE_PE && pb <= MAX_VALUE_PB && pfcf <= MAX_VALUE_PFCF;
+    // วิเคราะห์แท่งราคา "รายวัน" ของหุ้นหนึ่งตัว เพื่อเช็คเกณฑ์ Volume + โมเมนตัมราคา (ข้อ 1-2)
+    // ต้องมีแท่งราคาย้อนหลังอย่างน้อย 51 แท่ง (50 วันสำหรับ MA50 + 1 วันปัจจุบัน) ไม่งั้นถือว่าข้อมูล
+    // ไม่พอสำหรับสแกน (คืนค่า null แล้วผู้เรียกจะตัดสัญลักษณ์นี้ออกไปโดยอัตโนมัติ)
+    function computeTechnicalSignal(bars) {
+      if (!bars || bars.length < 51) return null;
+      const closes = bars.map((b) => b.close);
+      const volumes = bars.map((b) => b.volume);
+      const n = closes.length;
+      const last = n - 1;
+
+      const price = closes[last];
+      const ma20 = smaLast(closes, 20);
+      const ma50 = smaLast(closes, 50);
+      const aboveMA20 = ma20 != null && price > ma20;
+      const aboveMA50 = ma50 != null && price > ma50;
+
+      // ปริมาณซื้อขายล่าสุดเทียบกับค่าเฉลี่ย 20 วัน "ก่อนหน้า" (ไม่รวมแท่งล่าสุดเอง กันไม่ให้ปริมาณ
+      // ของวันนี้ไปดันค่าเฉลี่ยของตัวเองให้สูงขึ้นจนสัดส่วนคลาดเคลื่อน)
+      const lastVolume = volumes[last];
+      const avgVolume20 = smaLast(volumes.slice(0, last), 20);
+      const volumeRatio = avgVolume20 && avgVolume20 > 0 ? lastVolume / avgVolume20 : null;
+      const volumeSurge = volumeRatio != null && volumeRatio >= VOLUME_SURGE_MULTIPLIER;
+
+      // โมเมนตัมราคาต่อเนื่อง 1-4 สัปดาห์ — แบ่งเป็นสัปดาห์ละ TRADING_DAYS_PER_WEEK แท่ง แล้วเช็คว่า
+      // ในบรรดา MOMENTUM_WEEKS สัปดาห์ล่าสุด เป็นสัปดาห์ที่ราคาปิดบวก (เทียบสัปดาห์ก่อนหน้า) อย่าง
+      // น้อย MIN_POSITIVE_WEEKS สัปดาห์ และผลรวมทั้งช่วงต้องเป็นบวกด้วย (ตัดเคส "สัปดาห์นี้บวกทีเดียว
+      // หลังจากลงมาต่อเนื่อง" ที่ยังไม่ถือว่าเป็นเทรนด์ขาขึ้นจริง)
+      const weeklyReturns = [];
+      for (let w = 0; w < MOMENTUM_WEEKS; w++) {
+        const idxRecent = last - w * TRADING_DAYS_PER_WEEK;
+        const idxPrior = last - (w + 1) * TRADING_DAYS_PER_WEEK;
+        if (idxPrior < 0) break;
+        const recentClose = closes[idxRecent];
+        const priorClose = closes[idxPrior];
+        weeklyReturns.push(priorClose ? ((recentClose - priorClose) / priorClose) * 100 : null);
+      }
+      const positiveWeeks = weeklyReturns.filter((r) => r != null && r > 0).length;
+      const idx4wAgo = last - MOMENTUM_WEEKS * TRADING_DAYS_PER_WEEK;
+      const change4w = idx4wAgo >= 0 && closes[idx4wAgo] ? ((price - closes[idx4wAgo]) / closes[idx4wAgo]) * 100 : null;
+      const change1w = weeklyReturns.length > 0 ? weeklyReturns[0] : null;
+      const continuousUptrend =
+        weeklyReturns.length === MOMENTUM_WEEKS && positiveWeeks >= MIN_POSITIVE_WEEKS && change4w != null && change4w > 0;
+
+      // ความผันผวนรายวัน (20 วันล่าสุด) แปลงเป็นค่ารายปี (annualized) แบบเดียวกับที่ใช้ในวงการเงิน
+      // ทั่วไป (stdev รายวัน x sqrt(252)) เพื่อใช้แสดงเป็นคำเตือนความเสี่ยงบนการ์ด
+      let volatilityPct = null;
+      if (n >= 21) {
+        const dailyReturns = [];
+        for (let i = last - 19; i <= last; i++) {
+          if (i <= 0) continue;
+          const prev = closes[i - 1];
+          if (prev) dailyReturns.push((closes[i] - prev) / prev);
+        }
+        if (dailyReturns.length >= 10) {
+          const mean = dailyReturns.reduce((a, b) => a + b, 0) / dailyReturns.length;
+          const variance = dailyReturns.reduce((a, b) => a + (b - mean) ** 2, 0) / dailyReturns.length;
+          volatilityPct = Math.sqrt(variance) * Math.sqrt(252) * 100;
+        }
+      }
+
+      const technicalEligible = volumeSurge && aboveMA20 && aboveMA50 && continuousUptrend;
+
+      return {
+        price, ma20, ma50, aboveMA20, aboveMA50,
+        volumeRatio, volumeSurge, lastVolume, avgVolume20,
+        weeklyReturns, positiveWeeks, change1w, change4w, continuousUptrend,
+        volatilityPct, technicalEligible,
+      };
+    }
+
+    // ดึงจำนวนข่าวบริษัท (Finnhub /company-news) ในช่วง NEWS_LOOKBACK_DAYS วันย้อนหลัง — ใช้เป็น
+    // ตัวแทน "ความสนใจจากนักลงทุน" (ข้อ 3) เพราะระบบนี้ไม่มี API เชื่อมกับโซเชียล/ฟอรัมลงทุนโดยตรง
+    async function fetchCompanyNewsCount7d(symbol, fhKey) {
+      if (!fhKey) return null;
+      return fhQueue(async () => {
+        bumpFhCalls();
+        const to = new Date();
+        const from = new Date(to.getTime() - NEWS_LOOKBACK_DAYS * 24 * 60 * 60 * 1000);
+        const fmt = (d) => d.toISOString().slice(0, 10);
+        const res = await fetch(
+          `${FH_BASE}/company-news?symbol=${encodeURIComponent(symbol)}&from=${fmt(from)}&to=${fmt(to)}&token=${fhKey}`
+        );
+        const data = await res.json();
+        return Array.isArray(data) ? data.length : 0;
+      }).catch(() => null);
+    }
+
+    // ดึงตัวเลขแนวโน้มพื้นฐาน (การเติบโตของรายได้/กำไร + P/E) จาก object metric ของ Finnhub — ใช้
+    // pick() ลองหลายชื่อฟิลด์เผื่อ Finnhub เปลี่ยนชื่อฟิลด์หรือบางสัญลักษณ์ไม่มีบางฟิลด์
+    function getGrowthSignals(fundamentals) {
+      if (!fundamentals) return { revenueGrowth: null, epsGrowth: null, peTTM: null };
+      const revenueGrowth = pick(fundamentals, [
+        "revenueGrowthTTMYoy", "revenueGrowthQuarterlyYoy", "revenueGrowth5Y", "revenueGrowth3Y",
+      ]);
+      const epsGrowth = pick(fundamentals, [
+        "epsGrowthTTMYoy", "epsGrowthQuarterlyYoy", "epsGrowth5Y", "epsGrowth3Y",
+      ]);
+      const peTTM = pick(fundamentals, [
+        "peTTM", "peBasicExclExtraTTM", "peExclExtraTTM", "peInclExtraTTM", "peNormalizedAnnual",
+      ]);
+      return { revenueGrowth, epsGrowth, peTTM };
+    }
+
+    // ป้ายเตือนความเสี่ยง (ข้อ 5) — แสดงผลบนการ์ดเฉย ๆ ไม่ใช้คัดหุ้นออกจากลิสต์ เพราะหุ้นเทรนด์แรง
+    // ส่วนใหญ่ผันผวนสูงและ P/E สูงเป็นเรื่องปกติอยู่แล้วโดยธรรมชาติของหุ้นกลุ่มนี้
+    function getRiskFlags(tech, growth) {
+      const flags = [];
+      if (tech?.volatilityPct != null && tech.volatilityPct > RISK_HIGH_VOLATILITY_PCT) {
+        flags.push(`ผันผวนสูง (~${tech.volatilityPct.toFixed(0)}%/ปี)`);
+      }
+      if (growth?.peTTM != null && growth.peTTM > RISK_HIGH_PE) {
+        flags.push(`P/E สูง (${growth.peTTM.toFixed(1)}x)`);
+      }
+      return flags;
+    }
+
+    // คะแนนรวมสำหรับจัดอันดับหุ้นที่ผ่านเกณฑ์เทคนิคแล้ว — น้ำหนักมากสุดให้กับความแรงของ Volume
+    // Surge และโมเมนตัมราคา 4 สัปดาห์ (เกณฑ์บังคับ ข้อ 1-2) จากนั้นเสริมด้วยกระแสข่าว (ข้อ 3) และ
+    // แนวโน้มพื้นฐานเป็นบวก (ข้อ 4) ยิ่งคะแนนรวมสูง ยิ่งน่าสนใจกว่า
+    function computeTrendScore({ tech, growth, newsCount, hasCatalyst }) {
+      let score = 0;
+      if (tech?.volumeRatio != null) score += Math.min(tech.volumeRatio, 5) * 20;
+      if (tech?.change4w != null) score += Math.max(0, Math.min(tech.change4w, 50));
+      if (newsCount != null) score += Math.min(newsCount, 10) * 3;
+      if ((growth?.revenueGrowth != null && growth.revenueGrowth > 0) || (growth?.epsGrowth != null && growth.epsGrowth > 0)) {
+        score += 15;
+      }
+      if (hasCatalyst) score += 5;
+      return score;
     }
 
     function getCapTier(mktCapB) {
@@ -1803,23 +1934,25 @@
 
             <div className="mb-2 flex flex-wrap gap-1">
               <span
-                title="P/B Ratio = ราคาต่อหุ้น / มูลค่าทางบัญชีต่อหุ้น (จากงบดุล)"
+                title="ปริมาณซื้อขายล่าสุดเทียบค่าเฉลี่ย 20 วัน"
                 className="text-[9px] font-bold px-1.5 py-0.5 rounded border text-sky-300 bg-sky-500/10 border-sky-500/30"
               >
-                P/B {rec.ratios.pb.toFixed(2)}
+                Vol {rec.tech?.volumeRatio != null ? `${rec.tech.volumeRatio.toFixed(1)}x` : "—"}
               </span>
               <span
-                title="P/E Ratio = ราคาต่อหุ้น / กำไรสุทธิต่อหุ้น (จากงบกำไรขาดทุน)"
+                title="ราคาเปลี่ยนแปลงในช่วง 4 สัปดาห์ที่ผ่านมา"
                 className="text-[9px] font-bold px-1.5 py-0.5 rounded border text-emerald-300 bg-emerald-500/10 border-emerald-500/30"
               >
-                P/E {rec.ratios.pe.toFixed(2)}
+                4W {rec.tech?.change4w != null ? fmtPct(rec.tech.change4w) : "—"}
               </span>
-              <span
-                title="P/FCF Ratio = ราคาต่อหุ้น / กระแสเงินสดอิสระต่อหุ้น (จากงบกระแสเงินสด)"
-                className="text-[9px] font-bold px-1.5 py-0.5 rounded border text-violet-300 bg-violet-500/10 border-violet-500/30"
-              >
-                P/FCF {rec.ratios.pfcf.toFixed(2)}
-              </span>
+              {rec.newsCount != null && (
+                <span
+                  title="จำนวนข่าวบริษัทในช่วง 7 วันที่ผ่านมา (Finnhub)"
+                  className="text-[9px] font-bold px-1.5 py-0.5 rounded border text-violet-300 bg-violet-500/10 border-violet-500/30"
+                >
+                  📰 {rec.newsCount}
+                </span>
+              )}
               {rec.capTier && (
                 <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${CAP_TIER_STYLE[rec.capTier]}`}>
                   {CAP_TIER_TH[rec.capTier]}
@@ -1832,11 +1965,17 @@
               {rec.mktCapB > 0 && <> • Mkt Cap ${rec.mktCapB.toFixed(1)}B</>}
             </div>
 
-            <div className="bg-zinc-950/80 border border-zinc-800/80 rounded-lg p-2.5 text-[10px] text-zinc-300 min-h-[54px]">
-              <div className="text-amber-400 font-bold mb-0.5 flex items-center gap-1">💎 หุ้นดีราคาถูก</div>
-              <div className="line-clamp-3">
-                เข้าเกณฑ์ทั้งงบดุล (P/B ≤ {MAX_VALUE_PB}), งบกำไรขาดทุน (P/E ≤ {MAX_VALUE_PE}) และงบกระแสเงินสด (P/FCF ≤ {MAX_VALUE_PFCF}) พร้อมกัน
+            <div className="bg-zinc-950/80 border border-zinc-800/80 rounded-lg p-2.5 text-[10px] text-zinc-300 min-h-[54px] space-y-1">
+              <div className="text-amber-400 font-bold mb-0.5 flex items-center gap-1">🔥 หุ้นเทรนด์ขาขึ้น</div>
+              <div className="line-clamp-2">
+                {rec.catalyst || "ราคา + ปริมาณซื้อขายเข้าเกณฑ์โมเมนตัมขาขึ้น อยู่เหนือ MA20/MA50 ต่อเนื่อง 1-4 สัปดาห์"}
               </div>
+              {rec.riskFlags && rec.riskFlags.length > 0 && (
+                <div className="text-amber-300/90 flex items-start gap-1 pt-0.5 border-t border-zinc-800/80">
+                  <span>⚠️</span>
+                  <span className="line-clamp-2">{rec.riskFlags.join(" • ")}</span>
+                </div>
+              )}
             </div>
           </div>
 
@@ -1939,14 +2078,21 @@
     const WeeklyRecommendedPanel = React.memo(function WeeklyRecommendedPanel({ tdKey, fhKey, dataMap, loadSymbol, loadSymbolsBatch, loadFundamentalsOnly, symbols, onAdd }) {
       const [loading, setLoading] = useState(false);
       const [scanProgress, setScanProgress] = useState({ done: 0, total: 0, found: 0 });
-      // fundamentalsMap เก็บ object metric ดิบจาก Finnhub (/stock/metric?metric=all) ต่อ symbol
-      // เพื่อใช้ทั้งกรองเกณฑ์ "หุ้นดีราคาถูก" (P/E, P/B, P/FCF — ดู getValueRatios/isValueEligible)
-      // และแสดงตัวเลขจริงบนการ์ดหุ้นแนะนำ
+      // fundamentalsMap เก็บ object metric ดิบจาก Finnhub (/stock/metric?metric=all) ต่อ symbol —
+      // ใช้คำนวณคะแนนเสริมจากปัจจัยพื้นฐาน (ข้อ 4 — Revenue/EPS Growth + P/E สำหรับป้ายความเสี่ยง)
       const [fundamentalsMap, setFundamentalsMap] = useState({});
+      // newsMap เก็บจำนวนข่าวบริษัทในช่วง 7 วันล่าสุดต่อ symbol (Finnhub /company-news) — ใช้เป็น
+      // ตัวแทนความสนใจของนักลงทุน (ข้อ 3)
+      const [newsMap, setNewsMap] = useState({});
+      // technicalMap เก็บผลวิเคราะห์ Volume + โมเมนตัมราคาจากแท่งราคา "รายวัน" ต่อ symbol (ข้อ 1-2)
+      // เก็บแยกจาก dataMap ของแอปโดยตั้งใจ (ไม่ผ่าน loadSymbolsBatch) เพราะ dataMap/cache ใช้
+      // Timeframe เดียวกับที่ Watchlist หลักแสดงผล (ค่าเริ่มต้น "1week") ถ้าใช้ dataMap ร่วมกันจะทำให้
+      // สัญลักษณ์ที่ผู้ใช้เพิ่มไว้ใน Watchlist อยู่แล้วถูกสแกนเนอร์ทับด้วยแท่งราคารายวันโดยไม่ได้ตั้งใจ
+      const [technicalMap, setTechnicalMap] = useState({});
 
       // พูลหุ้นสำหรับสแกน = หุ้นที่คัดสรรไว้ล่วงหน้า (TRENDING_UNIVERSE) รวมกับหุ้นสามัญทั่วโลก
       // อีกก้อนใหญ่ที่ดึงมาจาก Twelve Data (ดู fetchGlobalStockUniverse ด้านบน) รวมกันสูงสุด
-      // ~GLOBAL_UNIVERSE_TARGET_SIZE ตัว เพื่อขยายโอกาสเจอหุ้นที่เข้าเกณฑ์มูลค่าให้กว้างกว่าลิสต์
+      // ~GLOBAL_UNIVERSE_TARGET_SIZE ตัว เพื่อขยายโอกาสเจอหุ้นที่เข้าเกณฑ์เทรนด์ให้กว้างกว่าลิสต์
       // คัดสรรอย่างเดียว — ระหว่างที่ยังดึงไม่เสร็จ (หรือดึงไม่สำเร็จ) จะยังไม่เริ่มสแกนจนกว่า
       // universeReady จะเป็น true (ดู effect ด้านล่าง) เพื่อกันไม่ให้สแกนซ้ำสองรอบด้วยพูลคนละขนาดกัน
       const [globalUniverse, setGlobalUniverse] = useState(null);
@@ -1996,8 +2142,29 @@
         };
       }, [universe]);
 
+      // ดึงแท่งราคา "รายวัน" ของหลายสัญลักษณ์ทีละก้อน (TECH_SCAN_BATCH_SIZE ตัว/คำขอ) แล้วคำนวณผล
+      // วิเคราะห์เทคนิค (computeTechnicalSignal) กลับมาเป็น map ต่อ symbol — ใช้ทั้งตอนสแกนใหม่และ
+      // ตอนโหลดผลลัพธ์ที่ "ล็อก" ไว้แล้วของสัปดาห์นี้ (เพื่อให้การ์ดแสดงตัวเลข Volume/โมเมนตัมได้)
+      const loadTechnicalSignals = useCallback(async (symbolsArr) => {
+        const out = {};
+        for (let i = 0; i < symbolsArr.length; i += TECH_SCAN_BATCH_SIZE) {
+          const chunk = symbolsArr.slice(i, i + TECH_SCAN_BATCH_SIZE);
+          let seriesMap = {};
+          try {
+            seriesMap = await fetchSeriesBatch(chunk, tdKey, "1day");
+          } catch (e) {
+            console.warn("[Scanner] fetchSeriesBatch (รายวัน) ล้มเหลวทั้งก้อน", e);
+          }
+          for (const sym of chunk) {
+            const signal = computeTechnicalSignal(seriesMap[sym]);
+            if (signal) out[sym] = signal;
+          }
+        }
+        return out;
+      }, [tdKey]);
+
       const scanCandidates = useCallback(async () => {
-        if (!fhKey) return; // เกณฑ์ "หุ้นดีราคาถูก" อิงงบการเงินจาก Finnhub ล้วน ๆ จึงต้องมี Finnhub key ก่อนสแกนได้
+        if (!tdKey) return; // เกณฑ์ Volume + โมเมนตัมราคาต้องใช้แท่งราคารายวันจาก Twelve Data เป็นหลัก
         setLoading(true);
         const rotationPool = today.rotation;
 
@@ -2008,14 +2175,18 @@
           const locked = await loadStore(WEEKLY_PICKS_STORE_KEY, null);
           if (locked && locked.weekKey === today.weekKey && Array.isArray(locked.symbols) && locked.symbols.length > 0) {
             setScanProgress({ done: locked.symbols.length, total: locked.symbols.length, found: locked.symbols.length });
-            // ดึงงบการเงิน (Finnhub) ของชุดหุ้นที่ล็อกไว้แล้วมาแสดงตัวเลข P/E, P/B, P/FCF จริงบน
-            // การ์ด (ไม่ต้องกรองซ้ำ เพราะสัปดาห์นี้ผ่านเกณฑ์ครบทั้ง 3 ข้อไปแล้วตอนสแกนครั้งแรก)
-            const fundEntries = await Promise.all(
-              locked.symbols.map(async (sym) => [sym, await fetchFundamentals(sym, fhKey).catch(() => null)])
-            );
+            // โหลดผลวิเคราะห์เทคนิค (Volume/โมเมนตัม) + ปัจจัยพื้นฐาน + ข่าว ของชุดหุ้นที่ล็อกไว้แล้ว
+            // มาแสดงตัวเลขจริงบนการ์ด (ไม่ต้องกรองซ้ำ เพราะสัปดาห์นี้ผ่านเกณฑ์เทคนิคไปแล้วตอนสแกนครั้งแรก)
+            const [techEntries, fundEntries, newsEntries] = await Promise.all([
+              loadTechnicalSignals(locked.symbols),
+              Promise.all(locked.symbols.map(async (sym) => [sym, await fetchFundamentals(sym, fhKey).catch(() => null)])),
+              Promise.all(locked.symbols.map(async (sym) => [sym, await fetchCompanyNewsCount7d(sym, fhKey).catch(() => null)])),
+            ]);
+            setTechnicalMap((prev) => ({ ...prev, ...techEntries }));
             setFundamentalsMap(Object.fromEntries(fundEntries));
-            // ดึงราคา/กราฟล่าสุด (Twelve Data) และโปรไฟล์บริษัท (ชื่อ, โลโก้, อุตสาหกรรม, Market Cap)
-            // ของชุดหุ้นที่ล็อกไว้ เพื่อแสดงผลบนการ์ด
+            setNewsMap(Object.fromEntries(newsEntries));
+            // ดึงราคา/กราฟล่าสุด (Twelve Data, Timeframe เดียวกับ Watchlist หลัก) และโปรไฟล์บริษัท
+            // (ชื่อ, โลโก้, อุตสาหกรรม, Market Cap) ของชุดหุ้นที่ล็อกไว้ เพื่อแสดงผลบนการ์ด
             if (tdKey) await loadSymbolsBatch(locked.symbols, DEFAULT_TIMEFRAME);
             if (loadFundamentalsOnly) {
               await Promise.all(locked.symbols.map((sym) => loadFundamentalsOnly(sym)));
@@ -2027,51 +2198,80 @@
 
           let doneCount = 0;
           let foundCount = 0;
-          const foundSymbols = [];
-          const fundResults = {}; // สะสมผล metric ของทุกตัวที่เช็กระหว่างสแกนรอบนี้
+          const shortlistSymbols = [];
+          const techResults = {}; // สะสมผลวิเคราะห์เทคนิคของทุกตัวที่เช็กระหว่างสแกนรอบนี้ (ไม่ใช่แค่ตัวที่ผ่าน)
 
-          // ไล่สแกนเป็น "ก้อน" (batch) ทีละ FUND_SCAN_BATCH_SIZE ตัว — ยิง Finnhub metric พร้อมกัน
-          // หลายสัญลักษณ์ต่อรอบ (fhQueue ยังคุมจังหวะยิงจริงไม่ให้เกิน fhMinIntervalMs/คำขอเหมือนเดิม
-          // ทุกประการ แค่ไม่ต้อง await ทีละตัวตามลำดับ) แล้วหยุดทันทีเมื่อพบครบ SCAN_BUFFER ตัว
-          // (Fast Stop) เพื่อประหยัดโควตา Finnhub ไม่ต้องไล่สแกนพูลทั้ง 3,000 ตัวเสมอไป
+          // ไล่สแกนเป็น "ก้อน" (batch) ทีละ TECH_SCAN_BATCH_SIZE ตัว — ยิง Twelve Data /time_series
+          // (รายวัน) พร้อมกันหลายสัญลักษณ์ต่อรอบ (tdQueue ยังคุมจังหวะยิงจริงไม่ให้เกิน tdMinIntervalMs/
+          // คำขอเหมือนเดิมทุกประการ แค่ไม่ต้อง await ทีละตัวตามลำดับ) แล้วหยุดทันทีเมื่อพบครบ
+          // SCAN_BUFFER ตัว (Fast Stop) เพื่อประหยัดโควตา Twelve Data ไม่ต้องไล่สแกนพูลทั้ง 3,000
+          // ตัวเสมอไป
           outer:
-          for (let i = 0; i < rotationPool.length; i += FUND_SCAN_BATCH_SIZE) {
+          for (let i = 0; i < rotationPool.length; i += TECH_SCAN_BATCH_SIZE) {
             if (foundCount >= SCAN_BUFFER) break;
 
-            const batchItems = rotationPool.slice(i, i + FUND_SCAN_BATCH_SIZE);
-            const metrics = await Promise.all(
-              batchItems.map((it) => fetchFundamentals(it.symbol, fhKey).catch(() => null))
-            );
+            const batchItems = rotationPool.slice(i, i + TECH_SCAN_BATCH_SIZE);
+            const symbolsChunk = batchItems.map((it) => it.symbol);
+            let seriesMap = {};
+            try {
+              seriesMap = await fetchSeriesBatch(symbolsChunk, tdKey, "1day");
+            } catch (e) {
+              console.warn("[Scanner] fetchSeriesBatch (รายวัน) ล้มเหลวทั้งก้อน", e);
+            }
 
             for (let j = 0; j < batchItems.length; j++) {
               const item = batchItems[j];
-              const fundamentals = metrics[j];
               doneCount++;
-              fundResults[item.symbol] = fundamentals;
+              const signal = computeTechnicalSignal(seriesMap[item.symbol]);
+              if (signal) techResults[item.symbol] = signal;
 
-              const ratios = getValueRatios(fundamentals);
-              if (isValueEligible(ratios)) {
-                foundSymbols.push(item.symbol);
+              if (signal && signal.technicalEligible) {
+                shortlistSymbols.push(item.symbol);
                 foundCount++;
               }
 
               if (foundCount >= SCAN_BUFFER) {
-                console.log(`[Scanner] พบหุ้นเข้าเกณฑ์ครบ ${SCAN_BUFFER} ตัวแล้ว หยุดการสแกนทันที (ประหยัดโควตา API)`);
+                console.log(`[Scanner] พบหุ้นเข้าเกณฑ์เทคนิคครบ ${SCAN_BUFFER} ตัวแล้ว หยุดการสแกนทันที (ประหยัดโควตา API)`);
                 break outer;
               }
             }
             setScanProgress({ done: doneCount, total: rotationPool.length, found: foundCount });
           }
           setScanProgress({ done: doneCount, total: rotationPool.length, found: foundCount });
+          setTechnicalMap((prev) => ({ ...prev, ...techResults }));
 
-          // ดึงราคา/กราฟล่าสุด (Twelve Data) และโปรไฟล์บริษัท (Finnhub profile2 — ชื่อ, โลโก้,
-          // อุตสาหกรรม, Market Cap) เฉพาะหุ้นที่ "ผ่านเกณฑ์แล้วเท่านั้น" เพื่อแสดงผลบนการ์ด — ลด
-          // จำนวนเรียก API จากหลักพันเหลือแค่หลักสิบ (เท่าจำนวนหุ้นที่ผ่านเกณฑ์จริง) ต่อรอบสแกน
-          if (tdKey && foundSymbols.length > 0) {
-            await loadSymbolsBatch(foundSymbols, DEFAULT_TIMEFRAME);
+          // ดึงคะแนนเสริม (ปัจจัยพื้นฐาน + ข่าว) เฉพาะหุ้นที่ "ผ่านเกณฑ์เทคนิคแล้วเท่านั้น" เป็นก้อน
+          // ทีละ FUND_SCAN_BATCH_SIZE ตัว — ลดจำนวนเรียก Finnhub จากหลักพันเหลือแค่หลักสิบ (เท่าจำนวน
+          // หุ้นที่ผ่านเกณฑ์เทคนิคจริง) ต่อรอบสแกน
+          const fundResults = {};
+          const newsResults = {};
+          for (let i = 0; i < shortlistSymbols.length; i += FUND_SCAN_BATCH_SIZE) {
+            const chunk = shortlistSymbols.slice(i, i + FUND_SCAN_BATCH_SIZE);
+            const pairs = await Promise.all(
+              chunk.map(async (sym) => {
+                const [fund, news] = await Promise.all([
+                  fetchFundamentals(sym, fhKey).catch(() => null),
+                  fetchCompanyNewsCount7d(sym, fhKey).catch(() => null),
+                ]);
+                return [sym, fund, news];
+              })
+            );
+            for (const [sym, fund, news] of pairs) {
+              fundResults[sym] = fund;
+              newsResults[sym] = news;
+            }
           }
-          if (loadFundamentalsOnly && foundSymbols.length > 0) {
-            await Promise.all(foundSymbols.map((sym) => loadFundamentalsOnly(sym)));
+          setFundamentalsMap((prev) => ({ ...prev, ...fundResults }));
+          setNewsMap((prev) => ({ ...prev, ...newsResults }));
+
+          // ดึงราคา/กราฟล่าสุด (Twelve Data, Timeframe เดียวกับ Watchlist หลัก) และโปรไฟล์บริษัท
+          // (Finnhub profile2 — ชื่อ, โลโก้, อุตสาหกรรม, Market Cap) เฉพาะหุ้นที่ "ผ่านเกณฑ์เทคนิค
+          // แล้วเท่านั้น" เพื่อแสดงผลบนการ์ด
+          if (tdKey && shortlistSymbols.length > 0) {
+            await loadSymbolsBatch(shortlistSymbols, DEFAULT_TIMEFRAME);
+          }
+          if (loadFundamentalsOnly && shortlistSymbols.length > 0) {
+            await Promise.all(shortlistSymbols.map((sym) => loadFundamentalsOnly(sym)));
           }
 
           // "ล็อก" ผลสแกนของสัปดาห์นี้ไว้ใน localStorage — ครั้งต่อไปที่เปิดเว็บมาดูหรือสลับแท็บ
@@ -2079,14 +2279,13 @@
           // จะขึ้นสัปดาห์ใหม่ (weekKey เปลี่ยน) ถึงจะสแกนชุดใหม่โดยอัตโนมัติ
           await saveStore(WEEKLY_PICKS_STORE_KEY, {
             weekKey: today.weekKey,
-            symbols: foundSymbols,
+            symbols: shortlistSymbols,
             savedAt: Date.now(),
           });
-          setFundamentalsMap((prev) => ({ ...prev, ...fundResults }));
         } finally {
           setLoading(false);
         }
-      }, [tdKey, fhKey, today, loadSymbolsBatch, loadFundamentalsOnly]);
+      }, [tdKey, fhKey, today, loadSymbolsBatch, loadFundamentalsOnly, loadTechnicalSignals]);
 
       useEffect(() => {
         // รอให้พูลหุ้นทั่วโลก (ดู fetchGlobalStockUniverse) โหลดเสร็จก่อนเสมอ (หรือ fail-open
@@ -2100,16 +2299,19 @@
       const recommended = useMemo(() => {
         const candidates = [];
         for (const item of today.rotation) {
+          const tech = technicalMap[item.symbol];
+          if (!tech || !tech.technicalEligible) continue;
           const fundamentals = fundamentalsMap[item.symbol];
-          const ratios = getValueRatios(fundamentals);
-          if (!isValueEligible(ratios)) continue;
+          const growth = getGrowthSignals(fundamentals);
+          const newsCount = newsMap[item.symbol];
           const entry = dataMap[item.symbol];
           const mktCapB = ((pick(fundamentals, ["marketCapitalization"]) || entry?.profile?.marketCapitalization || 0) * 1e6) / 1e9;
           const countryMeta = getCountryMeta(item.country);
+          const riskFlags = getRiskFlags(tech, growth);
+          const score = computeTrendScore({ tech, growth, newsCount, hasCatalyst: !!item.catalyst });
           candidates.push({
             ...item,
-            ratios,
-            fundamentals,
+            tech, growth, newsCount, riskFlags, score,
             mktCapB,
             capTier: getCapTier(mktCapB),
             countryMeta,
@@ -2119,16 +2321,11 @@
           });
         }
 
-        // เรียงจาก "ถูกที่สุด" ก่อนเสมอ — รวมสัดส่วนของ P/E, P/B, P/FCF เทียบกับเกณฑ์สูงสุดของ
-        // แต่ละตัว (MAX_VALUE_PE/PB/PFCF) เข้าด้วยกัน ยิ่งผลรวมน้อย ยิ่งแปลว่า "ถูก" เมื่อเทียบกับ
-        // เกณฑ์ทั้ง 3 งบพร้อมกัน (ไม่ให้ตัวใดตัวหนึ่งมีน้ำหนักเกินตัวอื่นเพราะหน่วยตัวเลขต่างกัน)
-        const cheapness = (c) => {
-          const { pe, pb, pfcf } = c.ratios;
-          return pe / MAX_VALUE_PE + pb / MAX_VALUE_PB + pfcf / MAX_VALUE_PFCF;
-        };
-        candidates.sort((a, b) => cheapness(a) - cheapness(b));
+        // เรียงจาก "คะแนนรวมสูงสุด" ก่อนเสมอ (ดู computeTrendScore — น้ำหนักหลักจาก Volume Surge +
+        // โมเมนตัมราคา 4 สัปดาห์ เสริมด้วยกระแสข่าวและปัจจัยพื้นฐาน)
+        candidates.sort((a, b) => b.score - a.score);
         return candidates.slice(0, WEEKLY_PICK_COUNT);
-      }, [today, dataMap, fundamentalsMap]);
+      }, [today, dataMap, fundamentalsMap, newsMap, technicalMap]);
 
       return (
         <div className="bg-gradient-to-r from-amber-500/10 via-zinc-900 to-emerald-500/10 border border-amber-500/30 rounded-lg p-4 space-y-4">
@@ -2136,10 +2333,10 @@
             <div>
               <div className="flex items-center gap-2 text-amber-400 font-bold text-base">
                 <Zap className="fill-amber-400" size={18} />
-                <span>หุ้นแนะนำประจำสัปดาห์ 💎 หุ้นดีราคาถูก ({WEEKLY_PICK_COUNT} ตัว)</span>
+                <span>หุ้นแนะนำประจำสัปดาห์ 🔥 หุ้นเทรนด์ขาขึ้น ({WEEKLY_PICK_COUNT} ตัว)</span>
               </div>
               <div className="text-xs text-zinc-400 mt-0.5">
-                เกณฑ์: P/B Ratio ≤ {MAX_VALUE_PB} (งบดุล) + P/E Ratio ≤ {MAX_VALUE_PE} (งบกำไรขาดทุน) + P/FCF Ratio ≤ {MAX_VALUE_PFCF} (งบกระแสเงินสด) จากพูลหุ้นทั่วโลก ~3,000 ตัว
+                เกณฑ์: Volume ≥ {VOLUME_SURGE_MULTIPLIER}x ค่าเฉลี่ย 20 วัน + ราคาอยู่เหนือ MA20/MA50 พร้อมโมเมนตัมต่อเนื่อง {MOMENTUM_WEEKS} สัปดาห์ เสริมคะแนนด้วยข่าว 7 วัน + แนวโน้มพื้นฐาน จากพูลหุ้นทั่วโลก ~3,000 ตัว
               </div>
             </div>
             <div className="flex items-center gap-2">
@@ -2149,35 +2346,35 @@
             </div>
           </div>
 
-          {!fhKey && (
+          {!tdKey && (
             <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-2.5 text-[11px] text-amber-300 flex items-start gap-2">
               <span>⚠️</span>
               <span>
-                ต้องตั้งค่า <strong>Finnhub API Key</strong> ก่อน (ใช้ดึงงบดุล/งบกำไรขาดทุน/งบกระแสเงินสด) จึงจะสแกนเพื่อหาหุ้นแนะนำประจำสัปดาห์ได้ — ตั้งค่าได้ที่เมนู ⚙ มุมขวาบน
+                ต้องตั้งค่า <strong>Twelve Data API Key</strong> ก่อน (ใช้ดึงราคา/ปริมาณซื้อขายรายวันมาเช็ค Volume Surge และ MA20/MA50) จึงจะสแกนเพื่อหาหุ้นแนะนำประจำสัปดาห์ได้ — ตั้งค่าได้ที่เมนู ⚙ มุมขวาบน
               </span>
             </div>
           )}
 
-          {fhKey && !tdKey && (
+          {tdKey && !fhKey && (
             <div className="bg-zinc-800/60 border border-zinc-700 rounded-lg p-2.5 text-[11px] text-zinc-400 flex items-start gap-2">
               <span>ℹ️</span>
               <span>
-                ยังไม่ได้ตั้งค่า <strong>Twelve Data API Key</strong> — พูลหุ้นสำหรับสแกนจะใช้แค่ลิสต์คัดสรรไว้ล่วงหน้า (TRENDING_UNIVERSE) และจะไม่แสดงราคา/กราฟล่าสุดบนการ์ด
+                ยังไม่ได้ตั้งค่า <strong>Finnhub API Key</strong> — ยังสแกนเกณฑ์ทางเทคนิค (Volume/โมเมนตัม) ได้ตามปกติ แต่จะไม่มีคะแนนเสริมจากข่าว/ปัจจัยพื้นฐาน และไม่มีชื่อบริษัท/โลโก้/อุตสาหกรรมแสดงผล
               </span>
             </div>
           )}
 
           {loading && (
             <div className="bg-zinc-950/80 border border-zinc-800 rounded-lg p-3 text-center text-xs text-amber-300 font-mono">
-              ⚡ กำลังสแกนจากพูลหุ้นทั่วโลก... พบผู้เข้าเกณฑ์แล้ว {scanProgress.found}/{SCAN_BUFFER} ตัว (เช็กไปแล้ว {scanProgress.done}/{scanProgress.total} ตัว)
+              ⚡ กำลังสแกนจากพูลหุ้นทั่วโลก... พบผู้เข้าเกณฑ์เทคนิคแล้ว {scanProgress.found}/{SCAN_BUFFER} ตัว (เช็กไปแล้ว {scanProgress.done}/{scanProgress.total} ตัว)
             </div>
           )}
 
           {!loading && recommended.length === 0 && (
             <div className="text-xs text-zinc-500 text-center py-6">
-              {fhKey
-                ? "ยังไม่พบหุ้นที่ตรงเกณฑ์ P/B, P/E และ P/FCF ในสัปดาห์นี้"
-                : "กรุณาตั้งค่า Finnhub API Key เพื่อเริ่มใช้งานหุ้นแนะนำประจำสัปดาห์"}
+              {tdKey
+                ? "ยังไม่พบหุ้นที่ตรงเกณฑ์ Volume Surge และโมเมนตัมราคาในสัปดาห์นี้"
+                : "กรุณาตั้งค่า Twelve Data API Key เพื่อเริ่มใช้งานหุ้นแนะนำประจำสัปดาห์"}
             </div>
           )}
 
