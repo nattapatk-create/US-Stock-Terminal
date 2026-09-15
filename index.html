@@ -537,39 +537,281 @@
     const SECTOR_STALE_WARN_MS = 30 * 60 * 1000; // เกิน 30 นาทีขึ้นไป แสดงป้ายเตือนว่าข้อมูลอาจไม่ทันสมัย
     const SECTOR_AUTO_REFRESH_MS = 20 * 60 * 1000; // ระยะห่างของการรีเฟรชอัตโนมัติเมื่อเปิดโหมด Auto-refresh
 
-    function createQueue(getMinIntervalMs) {
-      let last = 0;
-      let chain = Promise.resolve();
-      return (fn) => {
-        const run = chain.then(async () => {
-          const minIntervalMs = typeof getMinIntervalMs === "function" ? getMinIntervalMs() : getMinIntervalMs;
-          const wait = Math.max(0, last + minIntervalMs - Date.now());
-          if (wait > 0) await new Promise((r) => setTimeout(r, wait));
-          last = Date.now();
-          return fn();
-        });
-        chain = run.catch(() => {});
-        return run;
-      };
+    /* ============================================================
+       QUOTA ENGINE — ตัวจัดสรรโควตาแบบ "หน้าต่างเลื่อน + คิดตาม credit"
+       ------------------------------------------------------------
+       ปัญหาของคิวเดิม (createQueue แบบเว้นจังหวะคงที่):
+         1) ยิงได้ทีละ 1 คำขอเท่านั้น (serial) และต้องรอ "ช่วงห่างคงที่" (60000/limit ms) ทุกครั้ง
+            เวลาจริงต่อคำขอ = ช่วงห่าง + เวลาตอบกลับของเครือข่าย (latency) ดังนั้นถ้า Finnhub ตั้ง
+            60 คำขอ/นาที (ห่าง 1,000ms) แต่ latency 300ms จะยิงได้จริงแค่ ~46 คำขอ/นาที = ทิ้งโควตา
+            ฟรี ๆ ไปเกือบ 25% ตลอดเวลา ยิ่ง latency สูง (มือถือ/เน็ตช้า) ยิ่งเสียโควตามากขึ้น
+         2) นับทุกคำขอเป็น "1 หน่วย" เท่ากันหมด ทั้งที่ Twelve Data จำกัดเป็น **API credit ต่อนาที**
+            และคำขอแบบ batch (หลายสัญลักษณ์ใน 1 คำขอ) เสีย credit เท่าจำนวนสัญลักษณ์ — โค้ดเดิมยิง
+            batch ทีละ 30 สัญลักษณ์บนแผนฟรีที่มีแค่ 8 credit/นาที จึงโดน 429 "run out of API credits"
+            แทบทุกก้อนระหว่างสแกน (เห็นเป็น "สแกนแล้วไม่เจอหุ้น/ค้าง" โดยไม่รู้สาเหตุ)
+         3) ไม่มีเพดาน "ต่อวัน" เลย ทั้งที่แผนฟรี Twelve Data จำกัด 800 credit/วัน — พอโควตาวันหมด
+            ทุกคำขอที่เหลือจะล้มเหลวทีละตัวแบบเงียบ ๆ แทนที่จะรู้ตัวแล้วสลับไปใช้ Finnhub แทน
+         4) ไม่มีลำดับความสำคัญ งานเบื้องหลัง (สแกนพูลหลายพันตัว) แย่งคิวกับงานที่ผู้ใช้กดเองอยู่
+            ตรงหน้า ทำให้กดดูกราฟหุ้นตัวเดียวต้องรอหลังคิวสแกนทั้งหมด
+
+       ตัวจัดสรรใหม่แก้ครบทั้ง 4 ข้อ:
+         • หน้าต่างเลื่อน 60 วินาที + นับ "credit" จริง → ยิงพร้อมกันได้ (concurrency) จนเต็มโควตานาที
+           นั้นพอดี แล้วรอเฉพาะเท่าที่จำเป็น = ใช้โควตาได้เต็มเพดานโดยไม่ทะลุ
+         • งานแต่ละชิ้นแจ้ง cost ของตัวเอง (batch 30 สัญลักษณ์ = 30 credit) → คุมได้ตรงตามที่ผู้ให้
+           บริการคิดจริง
+         • เพดานรายวันแยกต่อผู้ให้บริการ + ฟังก์ชันเช็คโควตาคงเหลือ ให้ตัวเลือกเส้นทาง (router)
+           ใช้ตัดสินใจว่าจะส่งงานไปทางไหน
+         • คิวมีลำดับความสำคัญ (priority) งานที่ผู้ใช้กดเองแซงงานเบื้องหลังเสมอ
+       ============================================================ */
+    const RATE_WINDOW_MS = 60000;
+    // เผื่อ margin กันการนับคลาดเคลื่อนระหว่างนาฬิกาเครื่องเรากับฝั่งผู้ให้บริการ — แต่ใช้เฉพาะกับ
+    // Plan ที่เพดานสูงเท่านั้น (SAFETY_MIN_LIMIT ขึ้นไป) เพราะถ้าเพดานเป็นเลขน้อย ๆ อย่างแผนฟรีของ
+    // Twelve Data (8 credit/นาที) การหัก 8% ทิ้งจะกลายเป็น "เสียไป 1 credit เต็ม ๆ จาก 8" = ทิ้ง
+    // โควตา 12.5% ซึ่งขัดกับเป้าหมายที่ต้องการใช้โควตาให้เต็ม — เพดานเล็กจึงยิงเต็มจำนวน แล้วอาศัย
+    // กลไกเบรกอัตโนมัติเมื่อเจอ 429 (ดู penalize) รับมือกรณีขอบ ๆ แทน
+    const RATE_SAFETY = 0.92;
+    const SAFETY_MIN_LIMIT = 12;
+    function applySafety(limitPerMin) {
+      const lim = Math.max(1, limitPerMin);
+      return lim <= SAFETY_MIN_LIMIT ? Math.floor(lim) : Math.max(1, Math.floor(lim * RATE_SAFETY));
+    }
+    const PRIORITY = { INTERACTIVE: 0, NORMAL: 5, BACKGROUND: 9 };
+
+    class QuotaExhaustedError extends Error {
+      constructor(provider, scope) {
+        const name = provider === "td" ? "Twelve Data" : "Finnhub";
+        super(`โควตา ${name} ${scope === "day" ? "รายวัน" : "รายนาที"} หมดแล้ว`);
+        this.provider = provider;
+        this.scope = scope;
+        this.isQuotaExhausted = true;
+      }
     }
 
-    let tdMinIntervalMs = 7700;
-    // ค่าเริ่มต้นเดิมของ Finnhub ถูก "เขียนตายตัว" ไว้ที่ 1100ms (~54.5 คำขอ/นาที) ไม่ว่าผู้ใช้จะใช้
-    // แผนฟรี (~60 คำขอ/นาที) หรือแผนเสียเงินที่โควตาสูงกว่ามาก (เช่น 150-300 คำขอ/นาที) ก็ตาม ทำให้
-    // ผู้ใช้แผนเสียเงินไม่ได้ประโยชน์จากโควตาที่มากกว่าเลย และงานที่พึ่ง Finnhub หนัก ๆ (สแกน
-    // fundamentals ของหุ้นที่ผ่านเกณฑ์เทคนิคแล้ว) ต้องรอคิวช้ากว่าที่ควรจะเป็น ตอนนี้ทำให้ปรับได้
-    // เหมือน Twelve Data (ดู setTdRateLimit) ผ่านช่อง "Finnhub: จำนวนคำขอสูงสุดต่อนาที" ในหน้าตั้งค่า
-    let fhMinIntervalMs = 1050; // ค่าเริ่มต้น ≈ 57 คำขอ/นาที เผื่อ margin เล็กน้อยจากเพดานฟรี 60/นาที
+    /* ------------------------------------------------------------
+       แชร์หน้าต่างโควตาข้ามแท็บ
+       ------------------------------------------------------------
+       ตัวนับ "ใช้ไปกี่ครั้งวันนี้" อยู่ใน localStorage อยู่แล้วจึงแชร์ข้ามแท็บได้เอง แต่หน้าต่าง
+       เลื่อน "ต่อนาที" เป็นของแต่ละแท็บ — เปิดแอปค้างไว้ 2 แท็บโดยใช้ API key เดียวกัน แต่ละแท็บ
+       จะคิดว่าตัวเองมีโควตาเต็มจำนวน รวมกันแล้วยิงเกินเพดานเป็นเท่าตัว โดนปฏิเสธทั้งคู่
+       แก้โดยบันทึก credit ที่ใช้ไปลง localStorage พร้อม id ของแท็บที่ใช้ แล้วให้ทุกแท็บนับรวม
+       "credit ที่แท็บอื่นใช้ไป" เข้ากับของตัวเองก่อนตัดสินใจยิง
+
+       เรื่อง atomicity: การเขียนเป็น read-modify-write (อ่าน array เดิม → push → เขียนกลับ) ถ้า
+       สองแท็บทำพร้อมกันพอดี แท็บที่เขียนทีหลังจะ "ทับ" ของแท็บแรกที่เพิ่งเขียนไป (lost update) —
+       localStorage เองไม่มี compare-and-swap ให้ ป้องกันด้วย Web Locks API (`navigator.locks`)
+       ซึ่งเบราว์เซอร์สมัยใหม่ทุกตัวรองรับ (Chrome/Edge 69+, Firefox 96+, Safari 15.4+) เพื่อทำให้
+       การอ่าน-แก้-เขียนเป็น atomic จริงข้ามแท็บ ถ้าเบราว์เซอร์ไหนไม่รองรับ (เช่น Safari เก่า, หรือ
+       origin แบบ file://) จะถอยไปทำแบบเดิม (best-effort ไม่มี lock) โดยอัตโนมัติ — กลไก penalize
+       เมื่อเจอ 429 ยังรับมือความคลาดเคลื่อนเล็กน้อยจากกรณีนี้ได้อยู่ดี ไม่ทำให้แอปพังหรือค้าง
+       ------------------------------------------------------------ */
+    const TAB_ID = Math.random().toString(36).slice(2, 10);
+    const sharedWindowKey = (provider) => `rl-window-${provider}`;
+    const hasWebLocks = typeof navigator !== "undefined" && !!navigator.locks && typeof navigator.locks.request === "function";
+
+    // รันฟังก์ชันภายใต้ lock ข้ามแท็บที่ชื่อ `name` (ถ้าเบราว์เซอร์รองรับ) — กันการชนกันของ
+    // read-modify-write ให้ atomic จริง ๆ ไม่ใช่แค่ "น่าจะไม่ชน" เหมือนก่อนหน้านี้
+    function withCrossTabLock(name, fn) {
+      if (!hasWebLocks) return fn(); // ถอยไปทำตรง ๆ โดยไม่มี lock (best-effort เหมือนเดิม)
+      return navigator.locks.request(name, { mode: "exclusive" }, fn).catch((e) => {
+        // AbortError จาก timeout/ignoreDuplicates หรือเหตุผลอื่นของเบราว์เซอร์ — อย่าให้การยิง API
+        // ทั้งคิวค้างเพราะ lock มีปัญหา ถอยไปทำแบบไม่มี lock ครั้งนี้แทน ดีกว่าคำนวณโควตาไม่ได้เลย
+        console.warn(`[Storage] ขอ lock "${name}" ไม่สำเร็จ ทำงานต่อแบบไม่มี lock ครั้งนี้:`, e?.message || e);
+        return fn();
+      });
+    }
+
+    function readSharedWindow(provider) {
+      try {
+        const arr = JSON.parse(localStorage.getItem(sharedWindowKey(provider)) || "[]");
+        if (!Array.isArray(arr)) return [];
+        const now = Date.now();
+        return arr.filter((e) => Array.isArray(e) && now - e[0] < RATE_WINDOW_MS);
+      } catch { return []; }
+    }
+    // อ่าน-แก้-เขียนภายใต้ lock เดียวกันเสมอ (ชื่อ lock ผูกกับ provider ตรง ๆ) เพื่อไม่ให้แท็บอื่น
+    // ที่กำลัง append พร้อมกันมาทับกัน — ไม่ await ผลลัพธ์ของ caller (fire-and-forget) เพราะการยิง
+    // API จริงต้องไม่รอ lock บันทึกบัญชีให้เสร็จก่อน (เพียงแค่ต้อง "เผื่อเวลา" ไว้แล้ว ดูใน pump())
+    function appendSharedWindow(provider, t, cost) {
+      withCrossTabLock(`stock-dash-rl-${provider}`, async () => {
+        try {
+          const arr = readSharedWindow(provider);
+          arr.push([t, cost, TAB_ID]);
+          localStorage.setItem(sharedWindowKey(provider), JSON.stringify(arr));
+        } catch { /* localStorage ใช้ไม่ได้ → ถอยไปใช้หน้าต่างในหน่วยความจำของแท็บนี้อย่างเดียว */ }
+      }).catch(() => {});
+    }
+    // credit ที่ "แท็บอื่น" ใช้ไปในหน้าต่าง 60 วินาทีล่าสุด (ไม่นับของแท็บนี้ เพราะนับในหน่วยความจำแล้ว)
+    // ตัว pump ของคิวเรียกฟังก์ชันนี้ทุกงานในคิว จึงจำผลไว้สั้น ๆ กันการ parse JSON ซ้ำถี่เกินจำเป็น
+    const foreignCache = {};
+    const FOREIGN_CACHE_MS = 250;
+    function foreignCredits(provider) {
+      const now = Date.now();
+      const hit = foreignCache[provider];
+      if (hit && now - hit.t < FOREIGN_CACHE_MS) return hit.v;
+      const v = readSharedWindow(provider).reduce((sum, e) => (e[2] === TAB_ID ? sum : sum + (e[1] || 0)), 0);
+      foreignCache[provider] = { t: now, v };
+      return v;
+    }
+    function invalidateForeignCache(provider) { delete foreignCache[provider]; }
+    // แท็บอื่นเพิ่งยิงคำขอ → ล้างผลที่จำไว้ทันที ไม่ต้องรอครบ 250ms (event นี้ยิงเฉพาะเมื่อ
+    // "แท็บอื่น" เป็นคนเขียน localStorage เท่านั้น จึงไม่วนกลับมาหาตัวเอง)
+    try {
+      window.addEventListener("storage", (ev) => {
+        if (ev.key && ev.key.startsWith("rl-window-")) invalidateForeignCache(ev.key.slice(10));
+      });
+    } catch { /* ไม่มี window (เช่นรันใน worker) ก็ข้ามไป */ }
+
+    function createLimiter(provider, getLimitPerMin, getMaxConcurrent) {
+      const spent = [];      // ประวัติ credit ที่ใช้ไปในหน้าต่าง 60 วินาทีล่าสุด [{t, cost}]
+      const queue = [];      // งานที่รอคิวอยู่ เรียงตาม priority แล้วค่อยตามลำดับที่เข้ามา
+      let active = 0;        // จำนวนคำขอที่กำลังวิ่งอยู่จริงในขณะนี้
+      let seq = 0;
+      let timer = null;
+
+      const prune = (now) => { while (spent.length && now - spent[0].t >= RATE_WINDOW_MS) spent.shift(); };
+      const ownCredits = () => spent.reduce((s, e) => s + e.cost, 0);
+      // โควตาที่ "ใช้ไปแล้วจริง" = ของแท็บนี้ + ของแท็บอื่นที่เปิดอยู่พร้อมกัน
+      const usedCredits = () => ownCredits() + foreignCredits(provider);
+      const effectiveLimit = () => applySafety(getLimitPerMin());
+
+      function wake(delay) {
+        if (timer) return;
+        timer = setTimeout(() => { timer = null; pump(); }, Math.max(15, delay));
+      }
+
+      function pump() {
+        while (queue.length) {
+          const now = Date.now();
+          prune(now);
+          if (active >= Math.max(1, getMaxConcurrent())) return; // เต็ม concurrency → รอให้งานเดิมจบก่อน
+          const limit = effectiveLimit();
+          const task = queue[0];
+          // งานที่ cost ใหญ่กว่าเพดานนาทีเป็นไปไม่ได้อยู่แล้ว — หนีบไว้ที่เพดานเพื่อไม่ให้คิวตันถาวร
+          const cost = Math.min(task.cost, limit);
+          if (usedCredits() + cost > limit) {
+            // รอจนกว่า credit ก้อนเก่าสุดจะหลุดออกจากหน้าต่าง 60 วินาที แล้วค่อยลองใหม่
+            // ถ้าที่เต็มอยู่เป็นของแท็บอื่น (spent ของเราว่าง) ให้ poll ถี่ ๆ แทน — แท็บนั้นอาจถูก
+            // ปิดไปเมื่อไรก็ได้ เราจะได้เข้าใช้โควตาต่อทันทีโดยไม่ต้องรอครบนาที
+            wake(spent.length ? RATE_WINDOW_MS - (now - spent[0].t) + 25 : 500);
+            return;
+          }
+          queue.shift();
+          spent.push({ t: now, cost });
+          appendSharedWindow(provider, now, cost);
+          active += 1;
+          Promise.resolve()
+            .then(task.fn)
+            .then(task.resolve, task.reject)
+            .finally(() => { active -= 1; pump(); });
+        }
+      }
+
+      const run = (fn, opts = {}) => {
+        const cost = Math.max(1, Number(typeof opts === "number" ? opts : opts.cost) || 1);
+        const priority = (typeof opts === "object" && opts.priority != null) ? opts.priority : PRIORITY.NORMAL;
+        return new Promise((resolve, reject) => {
+          const task = { fn, cost, priority, seq: seq++, resolve, reject };
+          // แทรกตามลำดับความสำคัญ (เลขน้อย = สำคัญกว่า) งานที่ priority เท่ากันเรียงตามลำดับเข้าคิว
+          let i = queue.length;
+          while (i > 0 && queue[i - 1].priority > priority) i--;
+          queue.splice(i, 0, task);
+          pump();
+        });
+      };
+
+      run.provider = provider;
+      run.effectiveLimit = effectiveLimit;
+      // เมื่อโดน 429 จริงจากผู้ให้บริการ = การประมาณของเราสูงเกินไปชั่วคราว (เช่น มีอีกแท็บของแอป
+      // เปิดอยู่และใช้ key เดียวกัน หรือ Plan จริงต่ำกว่าที่ผู้ใช้กรอกไว้) — ยัด credit ปลอมเข้า
+      // หน้าต่างเพื่อ "เบรก" ตัวเองอัตโนมัติ แล้วค่อยกลับมาเต็มสปีดเองเมื่อหน้าต่าง 60 วิ เลื่อนพ้นไป
+      run.penalize = (credits = 1) => {
+        const now = Date.now();
+        for (let i = 0; i < credits; i++) spent.push({ t: now, cost: 1 });
+        appendSharedWindow(provider, now, credits); // ให้แท็บอื่นเบรกตามด้วย เพราะโดนเพดานเดียวกัน
+      };
+      run.stats = () => {
+        prune(Date.now());
+        const limit = effectiveLimit();
+        return { used: usedCredits(), limit, queued: queue.length, active, freeRatio: Math.max(0, (limit - usedCredits()) / limit) };
+      };
+      return run;
+    }
+
+    // เพดานของแต่ละผู้ให้บริการ — ปรับได้จากหน้าตั้งค่าให้ตรงกับ Plan ที่ผู้ใช้สมัครจริง
+    // (ค่าเริ่มต้น = แผนฟรีของแต่ละเจ้า) dailyLimit = 0 หมายถึง "ไม่จำกัด/ไม่ทราบ" จะไม่บล็อกอะไรเลย
+    const QUOTA = {
+      td: { perMin: 8, perDay: 800, maxConcurrent: 4 },   // Twelve Data แผนฟรี: 8 credit/นาที, 800 credit/วัน
+      fh: { perMin: 60, perDay: 0, maxConcurrent: 8 },    // Finnhub แผนฟรี: 60 คำขอ/นาที, ไม่จำกัดรายวัน
+    };
     function setTdRateLimit(callsPerMinute) {
       const n = Number(callsPerMinute);
-      if (Number.isFinite(n) && n > 0) tdMinIntervalMs = Math.ceil(60000 / n);
+      if (Number.isFinite(n) && n > 0) QUOTA.td.perMin = n;
     }
     function setFhRateLimit(callsPerMinute) {
       const n = Number(callsPerMinute);
-      if (Number.isFinite(n) && n > 0) fhMinIntervalMs = Math.ceil(60000 / n);
+      if (Number.isFinite(n) && n > 0) QUOTA.fh.perMin = n;
     }
-    const tdQueue = createQueue(() => tdMinIntervalMs);
-    const fhQueue = createQueue(() => fhMinIntervalMs);
+    function setTdDailyLimit(creditsPerDay) {
+      const n = Number(creditsPerDay);
+      if (Number.isFinite(n) && n >= 0) QUOTA.td.perDay = n;
+    }
+    function setFhDailyLimit(callsPerDay) {
+      const n = Number(callsPerDay);
+      if (Number.isFinite(n) && n >= 0) QUOTA.fh.perDay = n;
+    }
+
+    const tdQueue = createLimiter("td", () => QUOTA.td.perMin, () => QUOTA.td.maxConcurrent);
+    const fhQueue = createLimiter("fh", () => QUOTA.fh.perMin, () => QUOTA.fh.maxConcurrent);
+    const providerQueue = { td: tdQueue, fh: fhQueue };
+
+    // จำนวนสัญลักษณ์สูงสุดที่ควรรวมเป็น batch เดียวของ Twelve Data — ต้องไม่เกิน "เพดาน credit ต่อ
+    // นาที" ของแผนที่ใช้อยู่ ไม่งั้นคำขอก้อนนั้นจะทะลุโควตานาทีเดียวและโดน 429 ทั้งก้อนเสมอ
+    // (นี่คือสาเหตุที่การสแกนด้วยก้อนละ 30 ตัวบนแผนฟรี 8 credit/นาที ล้มเหลวมาตลอด)
+    const TD_BATCH_HARD_CAP = 120; // เพดานจากฝั่ง Twelve Data เอง (และกัน URL ยาวเกินไป)
+    function tdBatchSize() {
+      return Math.max(1, Math.min(TD_BATCH_HARD_CAP, tdQueue.effectiveLimit()));
+    }
+
+    /* ---------------- โควตารายวัน: ตรวจก่อนใช้ ---------------- */
+    // getApiCallsToday/bumpApiCalls ประกาศอยู่ด้านล่าง (function declaration จึงถูก hoist มาใช้ได้)
+    function dailyRemaining(provider) {
+      const limit = QUOTA[provider]?.perDay || 0;
+      if (!limit) return Infinity; // ไม่ได้ตั้งเพดานรายวันไว้ = ไม่จำกัด
+      return Math.max(0, limit - getApiCallsToday(provider));
+    }
+    function hasDailyBudget(provider, cost = 1) {
+      return dailyRemaining(provider) >= cost;
+    }
+    function assertDailyBudget(provider, cost = 1) {
+      if (!hasDailyBudget(provider, cost)) throw new QuotaExhaustedError(provider, "day");
+    }
+    // "คะแนนความว่าง" ของผู้ให้บริการ — ใช้ตัดสินใจว่างานที่ทำได้ทั้งสองทางควรไปทางไหน
+    // รวมทั้งโควตานาที (ว่างแค่ไหนตอนนี้) และโควตาวัน (เหลือกี่ % ของทั้งวัน) เข้าด้วยกัน
+    function providerHeadroom(provider, cost = 1) {
+      if (!hasDailyBudget(provider, cost)) return -1;
+      const s = providerQueue[provider].stats();
+      const limitDay = QUOTA[provider]?.perDay || 0;
+      const dayRatio = limitDay ? dailyRemaining(provider) / limitDay : 1;
+      const queuePenalty = 1 / (1 + s.queued / Math.max(1, s.limit)); // คิวยาว = ว่างน้อย
+      return (s.freeRatio * 0.5 + dayRatio * 0.5) * queuePenalty;
+    }
+
+    // สรุปสถานะโควตาไว้ให้ UI แสดงผล (ดูแถบโควตาบนหัวแอป)
+    function getQuotaSnapshot() {
+      const build = (p) => {
+        const s = providerQueue[p].stats();
+        return {
+          provider: p,
+          minuteUsed: s.used,
+          minuteLimit: s.limit,
+          queued: s.queued,
+          active: s.active,
+          dayUsed: getApiCallsToday(p),
+          dayLimit: QUOTA[p].perDay || 0,
+        };
+      };
+      return { td: build("td"), fh: build("fh") };
+    }
 
     // เช็ค error ชั่วคราวของ Finnhub (โดน rate limit ต่อนาที/ต่อวินาทีชนโควตา) แบบเดียวกับ
     // isTransientTdError — เดิม Finnhub ไม่มีการ retry เลย พอโดน 429 ระหว่างสแกนหุ้นจำนวนมาก
@@ -590,11 +832,9 @@
       }
     }
     async function saveStore(key, value) {
-      try {
-        localStorage.setItem(key, JSON.stringify(value));
-      } catch (e) {
-        console.error("storage save failed", e);
-      }
+      // ข้อมูลผู้ใช้ (watchlist, API keys, พอร์ต) สำคัญกว่าแคชเสมอ — ถ้าพื้นที่เต็มให้กวาดแคชทิ้ง
+      // แล้วเขียนใหม่ ไม่ใช่ปล่อยให้การตั้งค่าของผู้ใช้หายไปเพราะแคชกินพื้นที่จนหมด
+      safeSetItem(key, JSON.stringify(value));
     }
 
     /* ---------------- exchange rate helper (USD -> THB) ---------------- */
@@ -765,7 +1005,7 @@
     }
     function saveCachedEntry(symbol, { quote, series, timeframe, fundamentals, profile }) {
       try {
-        localStorage.setItem(
+        safeSetItem(
           symbolCacheKey(symbol),
           JSON.stringify({ quote, series, timeframe, fundamentals, profile, cachedAt: Date.now() })
         );
@@ -774,7 +1014,117 @@
       }
     }
 
-    // ระยะเวลาที่ถือว่าแคชยัง "สด" อยู่ — ข้อมูลเป็นกราฟรายสัปดาห์/รายวันเป็นหลัก จึงไม่จำเป็นต้อง
+    /* ============================================================
+       STORAGE GARBAGE COLLECTOR
+       ------------------------------------------------------------
+       แอปนี้เก็บทุกอย่างไว้ใน localStorage (แคชแท่งราคาต่อสัญลักษณ์, โปรไฟล์/งบ/ข่าวจาก Finnhub,
+       ราคาปิดย้อนหลัง, พูลหุ้นทั่วโลก 3,000 ตัว) แต่ไม่เคยมีอะไรลบของเก่าเลย — พอสแกนพูลใหญ่ไป
+       หลายรอบ localStorage จะชนเพดานของเบราว์เซอร์ (~5MB) แล้ว setItem จะโยน QuotaExceededError
+       ซึ่งโค้ดเดิม "กลืน" ทิ้งเงียบ ๆ ผลคือแคชหยุดทำงานโดยไม่มีใครรู้ แล้วแอปก็กลับไปยิง API ใหม่
+       ทุกครั้งแบบไม่มีแคช = เผาโควตาทั้งสองเจ้าทิ้งวันละหลายเท่าโดยที่ผู้ใช้ไม่เห็นสาเหตุ
+
+       ตัวเก็บกวาดนี้ทำงาน 2 จังหวะ:
+         1) ตอนบูตแอป — กวาดของที่หมดอายุแน่ ๆ ทิ้ง (โหมดปกติ)
+         2) ตอน setItem ล้มเหลวเพราะพื้นที่เต็ม — กวาดแบบเข้มข้น (โหมด aggressive: ตัดตามอายุจริง
+            แล้วถ้ายังไม่พอ ไล่ลบแคชสัญลักษณ์ที่เก่าที่สุดก่อน แบบ LRU) แล้วลองเขียนใหม่อีกครั้ง
+       ============================================================ */
+    const SYMBOL_CACHE_MAX_AGE = 7 * 24 * 60 * 60 * 1000;  // แคชแท่งราคาต่อสัญลักษณ์: เก็บไว้ไม่เกิน 7 วัน
+    const HIST_CACHE_MAX_AGE = 7 * 24 * 60 * 60 * 1000;    // ราคาปิดย้อนหลังที่ใช้ทำกราฟพอร์ต
+    const SYMBOL_CACHE_KEEP = 300;                          // จำนวนแคชสัญลักษณ์สูงสุดที่ยอมให้เหลือไว้ตอนกวาดหนัก
+
+    function isStorageFullError(e) {
+      return !!e && (
+        e.name === "QuotaExceededError" ||
+        e.name === "NS_ERROR_DOM_QUOTA_REACHED" ||
+        e.code === 22 || e.code === 1014
+      );
+    }
+
+    function parseJsonSafe(raw) {
+      try { return JSON.parse(raw); } catch { return null; }
+    }
+
+    // อ่าน "เวลาที่บันทึก" ของรายการหนึ่ง ๆ ในแคช โดยรู้จักรูปแบบ timestamp ของทุกชนิดที่แอปใช้
+    // (cachedAt / t / fetchedAt / savedAt) — คืน null ถ้าอ่านไม่ออก (ถือว่าเก่าสุด ลบก่อนได้)
+    function cacheEntryTime(raw) {
+      const v = parseJsonSafe(raw);
+      if (!v || typeof v !== "object") return null;
+      return v.cachedAt || v.t || v.fetchedAt || v.savedAt || null;
+    }
+
+    function pruneStorage({ aggressive = false } = {}) {
+      let removed = 0;
+      try {
+        const todayKey = new Date().toISOString().slice(0, 10);
+        const keys = Object.keys(localStorage);
+        const symbolEntries = []; // สำหรับโหมด LRU
+
+        for (const key of keys) {
+          // 1) ตัวนับโควตาของวันเก่า — ไม่มีประโยชน์แล้ว ลบได้ทันทีเสมอ
+          if (/^(td|fh)-calls-\d{4}-\d{2}-\d{2}$/.test(key)) {
+            if (!key.endsWith(todayKey)) { localStorage.removeItem(key); removed++; }
+            continue;
+          }
+          // 2) แคชเมตาดาต้าฝั่ง Finnhub — เก็บเกินอายุจริงได้ 2 เท่าในโหมดปกติ (เผื่อใช้เป็นข้อมูล
+          //    สำรองตอนโควตาหมด) แต่โหมดกวาดหนักจะตัดที่อายุจริงเลย
+          const fhMatch = /^fh-(profile|metric|news)-/.exec(key);
+          if (fhMatch) {
+            const ttl = (FH_META_TTL[fhMatch[1]] || 0) * (aggressive ? 1 : 2);
+            const t = cacheEntryTime(localStorage.getItem(key));
+            if (!t || Date.now() - t > ttl) { localStorage.removeItem(key); removed++; }
+            continue;
+          }
+          // 3) ราคาปิดย้อนหลังสำหรับกราฟพอร์ต
+          if (key.startsWith(HIST_CACHE_PREFIX)) {
+            const t = cacheEntryTime(localStorage.getItem(key));
+            const maxAge = aggressive ? 24 * 60 * 60 * 1000 : HIST_CACHE_MAX_AGE;
+            if (!t || Date.now() - t > maxAge) { localStorage.removeItem(key); removed++; }
+            continue;
+          }
+          // 4) แคชแท่งราคาต่อสัญลักษณ์ — ก้อนใหญ่สุดของแอป (series หลายร้อยแท่งต่อตัว)
+          if (key.startsWith("us-dash-cache-")) {
+            const t = cacheEntryTime(localStorage.getItem(key));
+            if (!t || Date.now() - t > SYMBOL_CACHE_MAX_AGE) { localStorage.removeItem(key); removed++; }
+            else symbolEntries.push({ key, t });
+            continue;
+          }
+        }
+
+        // โหมดกวาดหนัก: ถ้าแคชสัญลักษณ์ยังเหลือเยอะเกินไป ลบตัวที่เก่าที่สุดออกก่อน (LRU)
+        if (aggressive && symbolEntries.length > SYMBOL_CACHE_KEEP) {
+          symbolEntries.sort((a, b) => a.t - b.t);
+          for (const e of symbolEntries.slice(0, symbolEntries.length - SYMBOL_CACHE_KEEP)) {
+            localStorage.removeItem(e.key);
+            removed++;
+          }
+        }
+      } catch (e) {
+        console.warn("[Storage] กวาดแคชไม่สำเร็จ", e);
+      }
+      if (removed > 0) console.log(`[Storage] ล้างแคชที่หมดอายุแล้ว ${removed} รายการ${aggressive ? " (โหมดกวาดหนัก)" : ""}`);
+      return removed;
+    }
+
+    // ใช้แทน localStorage.setItem ทุกจุดที่เขียน "แคช" (ไม่ใช่ข้อมูลผู้ใช้) — พื้นที่เต็มเมื่อไร
+    // ให้กวาดของเก่าทิ้งแล้วลองใหม่ ถ้ายังไม่ไหวจริง ๆ ค่อยยอมแพ้พร้อมบอกใน console ให้เห็นสาเหตุ
+    function safeSetItem(key, value) {
+      try {
+        localStorage.setItem(key, value);
+        return true;
+      } catch (e) {
+        if (!isStorageFullError(e)) { console.error("cache save failed", e); return false; }
+        pruneStorage({ aggressive: true });
+        try {
+          localStorage.setItem(key, value);
+          return true;
+        } catch (e2) {
+          console.warn("[Storage] พื้นที่เก็บข้อมูลเต็ม เขียนแคชไม่สำเร็จแม้ล้างของเก่าแล้ว — แอปยังทำงานได้ปกติแต่จะยิง API ถี่ขึ้น", e2);
+          return false;
+        }
+      }
+    }
+
+
     // ยิง API ใหม่ทุกครั้งที่เปิดแอปหรือสแกนซ้ำภายในวันเดียวกัน ค่านี้ช่วยลดจำนวนการเรียก Twelve
     // Data / Finnhub ลงอย่างมากเมื่อผู้ใช้เปิด/ปิดแอปหรือกดสแกนซ้ำ ๆ ในช่วงเวลาสั้น ๆ
     const CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 ชั่วโมง
@@ -1053,107 +1403,177 @@
         msg.includes("run out of api credits") || msg.includes("too many requests") || msg.includes("limit");
     }
 
-    async function fetchSeries(symbol, tdKey, interval = "1week", outputsize = null) {
-      const size = outputsize || OUTPUTSIZE_BY_INTERVAL[interval] || 220;
+    /* ------------------------------------------------------------
+       ตัวช่วยยิง HTTP ที่ผูกกับ Quota Engine
+       - เช็คโควตารายวันก่อนเข้าคิว (รู้ตัวก่อนยิง ไม่ใช่ปล่อยให้พังทีละคำขอ)
+       - นับ credit ตามจริง (batch = จำนวนสัญลักษณ์)
+       - เจอ 429 → สั่งเบรกตัวเองอัตโนมัติ (penalize) แล้ว retry ในคิวเดิม
+       ------------------------------------------------------------ */
+    async function tdRequest(url, { cost = 1, priority = PRIORITY.NORMAL, retries = 1 } = {}) {
+      assertDailyBudget("td", cost);
       return tdQueue(async () => {
-        bumpTdCalls();
-        let data, res;
-        for (let attempt = 0; attempt < 2; attempt++) {
-          res = await fetch(`${TD_BASE}/time_series?symbol=${encodeURIComponent(symbol)}&interval=${interval}&outputsize=${size}&apikey=${tdKey}`);
-          data = await res.json();
-          if (data.values) break;
-          // เจอ rate limit / credit หมดชั่วคราว → รอแล้วลองใหม่อีก 1 ครั้งก่อนจะฟ้อง error จริง ๆ
-          // (ปัญหาเดิม: บางหุ้นสลับ TF แล้ว "กราฟไม่ขึ้น" เพราะโดน rate limit แล้วไม่ retry เลย)
-          if (attempt === 0 && isTransientTdError(data, res)) {
-            await new Promise((r) => setTimeout(r, tdMinIntervalMs * 2));
-            continue;
-          }
-          break;
+        bumpTdCalls(cost);
+        let data = null, res = null;
+        for (let attempt = 0; attempt <= retries; attempt++) {
+          res = await fetch(url);
+          data = await res.json().catch(() => null);
+          if (!isTransientTdError(data, res)) break;
+          if (attempt === retries) break;
+          tdQueue.penalize(cost);                       // ประมาณเพดานสูงไป → หน่วงตัวเองชั่วคราว
+          bumpTdCalls(cost);                            // ครั้งที่ลองใหม่ก็เสีย credit จริงเช่นกัน
+          await new Promise((r) => setTimeout(r, 1200));
         }
-        if (!data.values) {
-          const reason = data.message || `ไม่พบข้อมูลราคาย้อนหลังของ ${symbol} ที่ Timeframe นี้ (Twelve Data)`;
-          throw new Error(reason);
+        return { data, res };
+      }, { cost, priority });
+    }
+
+    async function fhRequest(url, { priority = PRIORITY.NORMAL, retries = 1 } = {}) {
+      assertDailyBudget("fh", 1);
+      return fhQueue(async () => {
+        bumpFhCalls();
+        let res = null;
+        for (let attempt = 0; attempt <= retries; attempt++) {
+          res = await fetch(url);
+          if (!isTransientFhError(res)) break;
+          if (attempt === retries) break;
+          fhQueue.penalize(2);
+          bumpFhCalls();
+          await new Promise((r) => setTimeout(r, 800));
         }
-        const bars = data.values.slice().reverse().map((v) => ({
-          date: v.datetime, open: +v.open, high: +v.high, low: +v.low, close: +v.close, volume: +v.volume,
-        }));
-        // แก้บั๊ก "ราคาล่าสุดไม่โหลด" สำหรับหุ้นที่เพิ่งเข้าตลาดไม่นาน (เช่น SPCX/SpaceX ที่เพิ่ง
-        // IPO มิ.ย. 2026 — ที่ Timeframe รายสัปดาห์ (ค่าเริ่มต้น) จะมีข้อมูลย้อนหลังแค่ ~10 กว่าแท่ง
-        // ยังไม่ถึงเกณฑ์ 20 แท่งที่ต้องใช้คำนวณ EMA/RSI/MACD ให้ครบ) เดิมโค้ดตรงนี้ throw error ทิ้ง
-        // ทั้งเส้นทันทีที่แท่งไม่ครบ ทำให้ loadSymbol() ไม่มีทาง derive "ราคาล่าสุด" (deriveQuoteFromSeries)
-        // ออกมาได้เลยแม้ Twelve Data จะมีแท่งราคาล่าสุดอยู่จริงก็ตาม — ราคาจึงไม่ขึ้นตลอดไปสำหรับหุ้น
-        // กลุ่มนี้ (ไม่ใช่แค่ "โหลดช้า" แต่ "ไม่มีทางโหลดสำเร็จ" เพราะแท่งจะไม่มีวันครบ 20 จนกว่าจะผ่าน
-        // ไปหลายเดือน) แก้โดยคืนแท่งที่มีอยู่กลับไปตามจริงแทนการโยน error ทิ้งทั้งหมด — เฉพาะกรณี
-        // "ไม่มีแท่งเลย" (bars.length === 0) เท่านั้นที่ยังถือเป็น error จริง ๆ ส่วนกรณีมีแท่งแต่ไม่ครบ
-        // 20 ผู้เรียกที่ต้องการ indicator ครบ (เช่น TickerCard.analysis, ตัวสแกนหุ้นแนะนำใน
-        // fetchSeriesBatch) จะเช็ค series.length ของตัวเองอยู่แล้วและซ่อนส่วนที่คำนวณไม่ได้ไปเอง
-        // แต่ deriveQuoteFromSeries ยังคำนวณ "ราคาล่าสุด/เปลี่ยนแปลง%" จากแท่งล่าสุดได้ตามปกติเสมอ
-        if (bars.length === 0) {
-          throw new Error(`ไม่พบข้อมูลราคาย้อนหลังของ ${symbol} ที่ Timeframe นี้ (Twelve Data)`);
-        }
-        if (bars.length < MIN_BARS_FOR_FULL_INDICATORS) {
-          // ใส่ flag ไว้เฉย ๆ เผื่อใช้ debug — ไม่กระทบการใช้งานเป็น array ปกติของโค้ดส่วนอื่น
-          bars.insufficientForIndicators = true;
-        }
-        return bars;
-      });
+        const data = await res.json().catch(() => null);
+        return { data, res };
+      }, { cost: 1, priority });
+    }
+
+    function normalizeBars(values) {
+      return values.slice().reverse().map((v) => ({
+        date: v.datetime, open: +v.open, high: +v.high, low: +v.low, close: +v.close, volume: +v.volume,
+      }));
+    }
+
+    // ยิง /time_series หลายสัญลักษณ์ใน "คำขอเดียว" — Twelve Data คิด credit เท่าจำนวนสัญลักษณ์
+    // (ดู TD_BATCH_HARD_CAP / tdBatchSize ที่หนีบขนาดก้อนไม่ให้ทะลุเพดาน credit ต่อนาที)
+    async function rawFetchSeriesBatch(symbols, tdKey, interval, size, priority) {
+      const cost = symbols.length;
+      const symbolParam = symbols.map(encodeURIComponent).join(",");
+      const url = `${TD_BASE}/time_series?symbol=${symbolParam}&interval=${interval}&outputsize=${size}&apikey=${tdKey}`;
+      const { data } = await tdRequest(url, { cost, priority });
+      const out = {};
+      if (symbols.length === 1) {
+        // คำขอสัญลักษณ์เดียว Twelve Data ตอบ {meta, values} ตรง ๆ ไม่ห่อด้วยชื่อสัญลักษณ์
+        const entry = data && data.values ? data : data?.[symbols[0]];
+        out[symbols[0]] = entry?.values ? normalizeBars(entry.values) : null;
+        return out;
+      }
+      for (const s of symbols) {
+        const entry = data?.[s];
+        out[s] = entry?.values ? normalizeBars(entry.values) : null;
+      }
+      return out;
     }
 
     // ============================================================
-    // Batch fetch หลายสัญลักษณ์ในคำขอเดียว (แก้จุดบอด "Sector Rotation โหลดช้า")
+    // ตัวรวบคำขอ (coalescer) ของ Twelve Data /time_series
     // ------------------------------------------------------------
-    // เดิม SectorRotationView ยิง fetchSeries() แยกทีละสัญลักษณ์ (SPY + 11 sector ETF = 12 คำขอ)
-    // แม้จะ "ส่งเข้าคิวพร้อมกัน" ด้วย Promise.all แล้ว แต่คิว tdQueue ก็ยังจำกัดจังหวะยิงจริงไว้ที่
-    // ~7.7 วินาที/คำขอบนแพ็กเกจฟรี (ดู tdMinIntervalMs) เพราะแต่ละคำขอนับเป็น "1 คำขอ" แยกกัน ทำให้
-    // สแกน Sector Rotation ทั้งหมดใช้เวลารวม 12 x ~7.7s ≈ 90+ วินาทีขึ้นไปทุกครั้ง
-    // Twelve Data รองรับการระบุหลายสัญลักษณ์คั่นด้วย comma ในพารามิเตอร์ symbol เดียว (เอกสาร
-    // "Batch API requests") ซึ่งนับเป็น "1 คำขอ HTTP" แม้จะเสีย credit ตามจำนวนสัญลักษณ์เท่าเดิม
-    // (ไม่ได้ประหยัด credit แต่ประหยัดเวลาเข้าคิวมหาศาล เพราะคิวเห็นเป็นแค่ 1 รายการ ไม่ใช่ 12
-    // รายการที่ต้องรอเรียงคิวทีละอันเหมือนเดิม) ฟังก์ชันนี้จึงยิงทุกสัญลักษณ์ในคำขอเดียว แล้วแยก
-    // ผลลัพธ์กลับเป็น map ต่อสัญลักษณ์ให้ผู้เรียกใช้ต่อได้เหมือนเดิม
-    async function fetchSeriesBatch(symbols, tdKey, interval = "1week", outputsize = null) {
+    // เดิมแต่ละจุดในแอปตัดสินใจ "ขนาดก้อน" กันเอง (30 บ้าง, ทีละตัวบ้าง) ซึ่งทั้งไม่สอดคล้องกับเพดาน
+    // credit จริง และทำให้คำขอของหน้าจอคนละส่วนที่เกิดพร้อมกันกลายเป็นหลายคำขอโดยไม่จำเป็น
+    // ตอนนี้ทุกเส้นทางเรียก requestSeries() ตัวเดียว แล้วตัวรวบนี้จะ:
+    //   1) หน่วงสั้น ๆ (SERIES_COALESCE_MS) เพื่อรอเพื่อนบ้านที่ขอในจังหวะเดียวกัน
+    //   2) ยุบสัญลักษณ์ซ้ำให้เหลือครั้งเดียว (เช่น การ์ดหุ้นกับตัวสแกนขอ NVDA พร้อมกัน = ยิงครั้งเดียว)
+    //   3) ตัดก้อนตามเพดาน credit ต่อนาทีที่ใช้ได้จริง (tdBatchSize)
+    // ผลคือโหลด Watchlist 20 ตัว = 1-3 คำขอ แทนที่จะเป็น 20 คำขอเรียงคิวทีละ ~7.7 วินาที
+    // ============================================================
+    const SERIES_COALESCE_MS = 90;
+    const seriesBuffers = new Map();   // key -> { items: [...] , timer }
+    const seriesInflight = new Map();  // key+symbol -> Promise (กันยิงซ้ำระหว่างที่คำขอยังไม่กลับ)
+
+    function flushSeriesBuffer(key) {
+      const buf = seriesBuffers.get(key);
+      if (!buf || buf.items.length === 0) return;
+      if (buf.timer) { clearTimeout(buf.timer); buf.timer = null; }
+
+      const chunkLimit = tdBatchSize();
+      const bySymbol = new Map();
+      const taken = [];
+      for (const item of buf.items) {
+        if (!bySymbol.has(item.symbol) && bySymbol.size >= chunkLimit) break;
+        if (!bySymbol.has(item.symbol)) bySymbol.set(item.symbol, []);
+        bySymbol.get(item.symbol).push(item);
+        taken.push(item);
+      }
+      buf.items = buf.items.slice(taken.length);
+      if (buf.items.length === 0) seriesBuffers.delete(key);
+      else if (!buf.timer) buf.timer = setTimeout(() => flushSeriesBuffer(key), SERIES_COALESCE_MS);
+
+      const symbols = [...bySymbol.keys()];
+      if (symbols.length === 0) return;
+      const { tdKey, interval, size } = buf.meta;
+      const priority = Math.min(...taken.map((i) => i.priority));
+
+      const p = rawFetchSeriesBatch(symbols, tdKey, interval, size, priority);
+      for (const sym of symbols) {
+        const inflightKey = `${key}|${sym}`;
+        const symPromise = p.then((map) => map[sym]);
+        seriesInflight.set(inflightKey, symPromise);
+        symPromise
+          .then(
+            (bars) => bySymbol.get(sym).forEach((it) => it.resolve(bars)),
+            (err) => bySymbol.get(sym).forEach((it) => it.reject(err))
+          )
+          .finally(() => seriesInflight.delete(inflightKey));
+      }
+    }
+
+    function requestSeries(symbol, tdKey, interval, size, priority = PRIORITY.NORMAL) {
+      const key = `${interval}|${size}`;
+      const inflightKey = `${key}|${symbol}`;
+      const inflight = seriesInflight.get(inflightKey);
+      if (inflight) return inflight;                    // มีคำขอเดียวกันวิ่งอยู่แล้ว → ใช้ผลร่วมกัน
+      return new Promise((resolve, reject) => {
+        let buf = seriesBuffers.get(key);
+        if (!buf) {
+          buf = { items: [], timer: null, meta: { tdKey, interval, size } };
+          seriesBuffers.set(key, buf);
+        }
+        buf.meta.tdKey = tdKey;
+        buf.items.push({ symbol, resolve, reject, priority });
+        const distinct = new Set(buf.items.map((i) => i.symbol)).size;
+        if (distinct >= tdBatchSize()) flushSeriesBuffer(key);
+        else if (!buf.timer) buf.timer = setTimeout(() => flushSeriesBuffer(key), SERIES_COALESCE_MS);
+      });
+    }
+
+    async function fetchSeries(symbol, tdKey, interval = "1week", outputsize = null, opts = {}) {
+      const size = outputsize || OUTPUTSIZE_BY_INTERVAL[interval] || 220;
+      const priority = opts.priority != null ? opts.priority : PRIORITY.INTERACTIVE;
+      const bars = await requestSeries(symbol, tdKey, interval, size, priority);
+      // แก้บั๊ก "ราคาล่าสุดไม่โหลด" สำหรับหุ้นที่เพิ่งเข้าตลาดไม่นาน (เช่นหุ้นที่เพิ่ง IPO ซึ่งที่
+      // Timeframe รายสัปดาห์จะมีข้อมูลย้อนหลังไม่ถึง 20 แท่ง) — คืนแท่งที่มีอยู่จริงกลับไปแทนการโยน
+      // error ทิ้งทั้งเส้น ผู้เรียกที่ต้องการ indicator ครบจะเช็ค series.length ของตัวเองอยู่แล้ว
+      if (!bars || bars.length === 0) {
+        throw new Error(`ไม่พบข้อมูลราคาย้อนหลังของ ${symbol} ที่ Timeframe นี้ (Twelve Data)`);
+      }
+      if (bars.length < MIN_BARS_FOR_FULL_INDICATORS) bars.insufficientForIndicators = true;
+      return bars;
+    }
+
+    // คงลายเซ็นเดิมไว้ให้ผู้เรียกทุกจุดใช้ได้เหมือนเดิม แต่ข้างในไม่ต้องตัดก้อนเองแล้ว — ส่งเข้า
+    // ตัวรวบคำขอให้จัดก้อนตามเพดาน credit จริงโดยอัตโนมัติ (คืน null สำหรับตัวที่แท่งไม่พอคำนวณ)
+    async function fetchSeriesBatch(symbols, tdKey, interval = "1week", outputsize = null, opts = {}) {
       const size = outputsize || OUTPUTSIZE_BY_INTERVAL[interval] || 220;
       const uniqueSymbols = [...new Set(symbols)];
       if (uniqueSymbols.length === 0) return {};
-      // คำขอเดี่ยว (1 สัญลักษณ์) Twelve Data จะตอบกลับเป็น {meta, values} ตรง ๆ ไม่ห่อด้วยชื่อ
-      // สัญลักษณ์ — ไม่ต้องใช้ batch ให้ยุ่งยากเกินจำเป็น ใช้ fetchSeries ปกติแทน
-      if (uniqueSymbols.length === 1) {
+      const priority = opts.priority != null ? opts.priority : PRIORITY.BACKGROUND;
+      const entries = await Promise.all(uniqueSymbols.map(async (s) => {
         try {
-          return { [uniqueSymbols[0]]: await fetchSeries(uniqueSymbols[0], tdKey, interval, size) };
-        } catch {
-          return { [uniqueSymbols[0]]: null };
+          const bars = await requestSeries(s, tdKey, interval, size, priority);
+          return [s, bars && bars.length >= MIN_BARS_FOR_FULL_INDICATORS ? bars : null];
+        } catch (e) {
+          if (e?.isQuotaExhausted) throw e;             // โควตาวันหมด = หยุดทั้งก้อน ไม่ไล่ยิงต่อให้เปลืองเวลา
+          return [s, null];
         }
-      }
-      return tdQueue(async () => {
-        // 1 คำขอ HTTP แต่เสีย credit เท่าจำนวนสัญลักษณ์ (ตามเอกสาร Twelve Data Batch requests)
-        bumpTdCalls(uniqueSymbols.length);
-        const symbolParam = uniqueSymbols.map(encodeURIComponent).join(",");
-        let data, res;
-        for (let attempt = 0; attempt < 2; attempt++) {
-          res = await fetch(`${TD_BASE}/time_series?symbol=${symbolParam}&interval=${interval}&outputsize=${size}&apikey=${tdKey}`);
-          data = await res.json();
-          // เมื่อยิงหลายสัญลักษณ์ Twelve Data จะตอบเป็น object คีย์ตามชื่อสัญลักษณ์ แต่ละตัวมี
-          // {meta, values} หรือ {status:"error", ...} แยกกันไป (สัญลักษณ์หนึ่งพังไม่กระทบตัวอื่น)
-          const hasAnyValues = data && typeof data === "object" &&
-            uniqueSymbols.some((s) => data[s]?.values);
-          if (hasAnyValues) break;
-          if (attempt === 0 && isTransientTdError(data, res)) {
-            await new Promise((r) => setTimeout(r, tdMinIntervalMs * 2));
-            continue;
-          }
-          break;
-        }
-        const result = {};
-        for (const s of uniqueSymbols) {
-          const entry = data?.[s];
-          if (!entry || !entry.values) { result[s] = null; continue; }
-          const bars = entry.values.slice().reverse().map((v) => ({
-            date: v.datetime, open: +v.open, high: +v.high, low: +v.low, close: +v.close, volume: +v.volume,
-          }));
-          result[s] = bars.length >= MIN_BARS_FOR_FULL_INDICATORS ? bars : null;
-        }
-        return result;
-      });
+      }));
+      return Object.fromEntries(entries);
     }
 
     // เดิม fetchQuote() ยิง Twelve Data /quote แยกต่างหาก (เปลือง credit ซ้ำซ้อนกับ /time_series
@@ -1177,129 +1597,141 @@
       };
     }
 
-    // เก็บ fetchQuote ไว้เผื่ออนาคตต้องการราคาสด real-time แยกจากกราฟ แต่ตอน initial/refresh
-    // load ปกติจะไม่เรียกใช้แล้ว (ดู loadSymbol/loadSeries ด้านล่าง) — ใช้เป็น fallback สุดท้าย
-    // เมื่อไม่มี Finnhub key เท่านั้น (ดู fetchQuoteBalanced ด้านล่าง)
-    async function fetchQuote(symbol, tdKey) {
-      return tdQueue(async () => {
-        bumpTdCalls();
-        const res = await fetch(`${TD_BASE}/quote?symbol=${encodeURIComponent(symbol)}&apikey=${tdKey}`);
-        const data = await res.json();
-        if (data.status === "error" || !data.close) throw new Error(data.message || "ดึงราคาล่าสุดจาก Twelve Data ไม่สำเร็จ");
-        return {
-          close: +data.close,
-          percent_change: +data.percent_change,
-          open: +data.open,
-          high: +data.high,
-          low: +data.low,
-          previous_close: +data.previous_close,
-          volume: data.volume ? +data.volume : null,
-        };
-      });
+    // เก็บ fetchQuote ไว้เป็นเส้นทางสำรองของ "ราคาล่าสุด" ฝั่ง Twelve Data — ตัวจัดเส้นทาง
+    // (fetchQuoteBalanced) จะเลือกใช้เมื่อฝั่ง Finnhub ตันหรือไม่มี key เท่านั้น
+    async function fetchQuote(symbol, tdKey, opts = {}) {
+      const url = `${TD_BASE}/quote?symbol=${encodeURIComponent(symbol)}&apikey=${tdKey}`;
+      const { data } = await tdRequest(url, { cost: 1, priority: opts.priority ?? PRIORITY.INTERACTIVE });
+      if (!data || data.status === "error" || !data.close) {
+        throw new Error(data?.message || "ดึงราคาล่าสุดจาก Twelve Data ไม่สำเร็จ");
+      }
+      return {
+        close: +data.close,
+        percent_change: +data.percent_change,
+        open: +data.open,
+        high: +data.high,
+        low: +data.low,
+        previous_close: +data.previous_close,
+        volume: data.volume ? +data.volume : null,
+      };
     }
 
     // ============================================================
     // จุดสมดุลภาระระหว่าง Twelve Data กับ Finnhub
     // ------------------------------------------------------------
-    // เดิม "ราคาล่าสุด" (quote) ถูกคำนวณจากแท่งราคาใน series ที่ดึงจาก Twelve Data เท่านั้น
-    // (deriveQuoteFromSeries) ทำให้ทุกครั้งที่อยากได้ราคาสดขึ้น ต้องยิง /time_series ของ
-    // Twelve Data ใหม่ทั้งเส้น (แพงและช้าเพราะโดน rate limit เข้ม ~8 คำขอ/นาทีในแผนฟรี) ทั้งที่
-    // Finnhub มีเอนด์พอยต์ /quote ที่เบามาก คืนแค่ราคาล่าสุด/เปลี่ยนแปลง% และโควตาฟรีสูงกว่ามาก
-    // (~60 คำขอ/นาที) แต่กลับแทบไม่ถูกใช้เลยนอกจากตอนดึง fundamentals ของหุ้นที่ผ่านเกณฑ์แล้ว
-    //
-    // fetchQuoteBalanced() คือจุดตัดสินใจกลางว่า "ราคาล่าสุด" ควรมาจากไหน โดยเรียงลำดับ:
-    //   1) มี Finnhub key → ใช้ Finnhub /quote (เบา เร็ว ไม่แตะโควตา Twelve Data เลย)
-    //   2) ไม่มี Finnhub key แต่มี series สดอยู่แล้ว → คำนวณจาก series เดิม (ไม่ยิง API เพิ่ม)
-    //   3) ไม่มีทั้งคู่ → ยิง Twelve Data /quote เป็นทางเลือกสุดท้ายเท่านั้น
-    // ผลคือภาระการ "รีเฟรชราคา" ส่วนใหญ่ย้ายไปอยู่ที่ Finnhub ซึ่งมีโควตาเหลือเฟือ เหลือให้
-    // Twelve Data ทำหน้าที่เดียวที่มันจำเป็นจริง ๆ คือดึงแท่งราคาย้อนหลัง (candles) สำหรับคำนวณ
-    // แนวรับ/แนวต้าน/EMA/RSI/MACD เท่านั้น ซึ่งไม่จำเป็นต้องอัปเดตถี่เท่าราคาล่าสุด
-    async function fetchFinnhubQuote(symbol, fhKey) {
-      return fhQueue(async () => {
-        bumpFhCalls();
-        let res, data;
-        for (let attempt = 0; attempt < 2; attempt++) {
-          res = await fetch(`${FH_BASE}/quote?symbol=${encodeURIComponent(symbol)}&token=${fhKey}`);
-          if (isTransientFhError(res) && attempt === 0) {
-            // โดน rate limit ชั่วคราว → รอสั้น ๆ แล้วลองใหม่อีกครั้งก่อนจะปล่อยให้ผู้เรียก fallback ไป
-            // ทาง series/Twelve Data (การ retry เร็ว ๆ ในคิวเดิมมักเร็วกว่าการ fallback ข้าม provider)
-            await new Promise((r) => setTimeout(r, fhMinIntervalMs * 2));
-            continue;
-          }
-          break;
-        }
-        data = await res.json().catch(() => null);
-        // Finnhub คืน c=0 เมื่อไม่พบสัญลักษณ์ หรือ error/limit — ถือว่าใช้ไม่ได้ ให้ผู้เรียก fallback ต่อ
-        if (data == null || !data.c) throw new Error("ดึงราคาล่าสุดจาก Finnhub ไม่สำเร็จ");
-        return {
-          close: +data.c,
-          percent_change: data.dp != null ? +data.dp : (data.pc ? ((data.c - data.pc) / data.pc) * 100 : 0),
-          open: +data.o,
-          high: +data.h,
-          low: +data.l,
-          previous_close: +data.pc,
-          volume: null, // Finnhub /quote แผนฟรีไม่มี volume — จะคง volume เดิมจาก series ไว้แทน (ดูผู้เรียก)
-        };
-      });
+    // เวอร์ชันเดิมใช้กติกาตายตัว "มี Finnhub key เมื่อไหร่ก็ใช้ Finnhub เสมอ" ซึ่งดีกว่าไม่ทำอะไร
+    // แต่ยังไม่ใช่การ balance จริง เพราะไม่ได้ดูเลยว่า ณ วินาทีนั้นฝั่งไหน "ว่าง" กว่ากัน — ถ้าตัวสแกน
+    // กำลังถล่ม Finnhub ด้วยงบการเงิน/ข่าวอยู่ คำขอราคาล่าสุดของผู้ใช้ก็ยังต่อท้ายคิว Finnhub ที่ตัน
+    // ทั้งที่โควตา Twelve Data อาจว่างอยู่
+    // ตอนนี้ตัดสินใจจาก providerHeadroom() ซึ่งรวม (โควตานาทีที่เหลือ + โควตาวันที่เหลือ + ความยาวคิว)
+    // ของทั้งสองฝั่งเข้าด้วยกัน แล้วเลือกฝั่งที่ว่างกว่าจริง ๆ โดยยังคงลำดับ fallback เดิมไว้:
+    //   ฝั่งที่ว่ากว่า → อีกฝั่ง → คำนวณจาก series ที่มีอยู่ (ไม่ยิง API เลย)
+    // หมายเหตุ: Finnhub /quote ถูกให้แต้มต่อเล็กน้อย เพราะเป็นคำขอ "เบา" (1 คำขอ = ข้อมูลราคาครบ)
+    // ขณะที่ฝั่ง Twelve Data ควรถูกสงวนไว้ให้ /time_series ซึ่งเป็นงานที่มีแต่ Twelve Data ทำได้
+    const TD_QUOTE_HANDICAP = 0.6; // ถ่วงน้ำหนักฝั่ง Twelve Data ลง เพื่อสงวน credit ไว้ทำแท่งราคา
+    async function fetchFinnhubQuote(symbol, fhKey, opts = {}) {
+      const url = `${FH_BASE}/quote?symbol=${encodeURIComponent(symbol)}&token=${fhKey}`;
+      const { data } = await fhRequest(url, { priority: opts.priority ?? PRIORITY.INTERACTIVE });
+      // Finnhub คืน c=0 เมื่อไม่พบสัญลักษณ์ หรือ error/limit — ถือว่าใช้ไม่ได้ ให้ผู้เรียก fallback ต่อ
+      if (data == null || !data.c) throw new Error("ดึงราคาล่าสุดจาก Finnhub ไม่สำเร็จ");
+      return {
+        close: +data.c,
+        percent_change: data.dp != null ? +data.dp : (data.pc ? ((data.c - data.pc) / data.pc) * 100 : 0),
+        open: +data.o,
+        high: +data.h,
+        low: +data.l,
+        previous_close: +data.pc,
+        volume: null, // Finnhub /quote แผนฟรีไม่มี volume — จะคง volume เดิมจาก series ไว้แทน (ดูผู้เรียก)
+      };
     }
 
-    async function fetchQuoteBalanced(symbol, { tdKey, fhKey, fallbackSeries } = {}) {
+    async function fetchQuoteBalanced(symbol, { tdKey, fhKey, fallbackSeries, priority } = {}) {
       const fh = (fhKey || "").trim();
-      if (fh) {
+      const td = (tdKey || "").trim();
+      const lastVol = fallbackSeries && fallbackSeries.length ? fallbackSeries[fallbackSeries.length - 1].volume : null;
+      const fromSeries = () => (fallbackSeries && fallbackSeries.length
+        ? { ...deriveQuoteFromSeries(fallbackSeries), source: "series" }
+        : null);
+
+      // จัดลำดับผู้ให้บริการตาม "ความว่าง" จริง ณ ขณะนั้น แทนกติกาตายตัวแบบเดิม
+      const routes = [];
+      if (fh) routes.push({ provider: "fh", score: providerHeadroom("fh", 1) });
+      if (td) routes.push({ provider: "td", score: providerHeadroom("td", 1) * TD_QUOTE_HANDICAP });
+      routes.sort((a, b) => b.score - a.score);
+
+      for (const route of routes) {
+        if (route.score < 0) continue; // โควตารายวันของฝั่งนี้หมดแล้ว ข้ามไปเลย
         try {
-          const q = await fetchFinnhubQuote(symbol, fh);
-          // Finnhub ไม่ให้ volume มา ถ้ามี series เดิมอยู่ ใช้ volume แท่งล่าสุดของ series เสริมให้ครบ
-          const lastVol = fallbackSeries && fallbackSeries.length ? fallbackSeries[fallbackSeries.length - 1].volume : null;
-          return { ...q, volume: q.volume ?? lastVol ?? null, source: "finnhub" };
+          if (route.provider === "fh") {
+            const q = await fetchFinnhubQuote(symbol, fh, { priority });
+            return { ...q, volume: q.volume ?? lastVol ?? null, source: "finnhub" };
+          }
+          // ก่อนจะยอมเสีย credit ของ Twelve Data ไปกับ "ราคาล่าสุด" ถ้ามี series สดอยู่แล้วให้ใช้
+          // ของเดิมก่อนเสมอ — credit ก้อนนั้นมีค่ากว่าเมื่อเก็บไว้ใช้ดึงแท่งราคา
+          const cheap = fromSeries();
+          if (cheap) return cheap;
+          const q = await fetchQuote(symbol, td, { priority });
+          return { ...q, source: "twelvedata" };
         } catch (e) {
-          console.warn(`Finnhub quote ล้มเหลวสำหรับ ${symbol}, fallback ไปทาง series/Twelve Data:`, e.message);
+          console.warn(`[Quote] ${route.provider} ล้มเหลวสำหรับ ${symbol} → ลองเส้นทางถัดไป:`, e.message);
         }
       }
-      if (fallbackSeries && fallbackSeries.length) {
-        return { ...deriveQuoteFromSeries(fallbackSeries), source: "series" };
-      }
-      const td = (tdKey || "").trim();
-      if (td) {
-        const q = await fetchQuote(symbol, td);
-        return { ...q, source: "twelvedata" };
-      }
-      return null;
+      return fromSeries();
     }
 
-    async function fetchFundamentals(symbol, fhKey) {
+    /* ------------------------------------------------------------
+       แคชข้อมูลฝั่ง Finnhub ที่ "เปลี่ยนไม่บ่อย"
+       ------------------------------------------------------------
+       profile2 (ชื่อ/โลโก้/อุตสาหกรรม/Market Cap) แทบไม่เปลี่ยนเลย และ metric (Revenue/EPS Growth,
+       P/E) เปลี่ยนปีละไม่กี่ครั้งตามรอบงบ แต่เดิมถูกยิงใหม่ทุกครั้งที่แคชหลักของสัญลักษณ์หมดอายุ
+       (6 ชั่วโมง) — เท่ากับเผาโควตา Finnhub วันละหลายรอบเพื่อข้อมูลชุดเดิมเป๊ะ ๆ
+       แยกแคชออกมาโดยให้อายุยาวกว่ามาก จึงเหลือโควตา Finnhub ไปรับภาระ "ราคาล่าสุด" ได้มากขึ้น
+       ------------------------------------------------------------ */
+    const FH_META_TTL = { profile: 7 * 24 * 60 * 60 * 1000, metric: 24 * 60 * 60 * 1000, news: 6 * 60 * 60 * 1000 };
+    function readFhCache(kind, symbol) {
+      try {
+        const raw = localStorage.getItem(`fh-${kind}-${symbol}`);
+        if (!raw) return undefined;
+        const parsed = JSON.parse(raw);
+        if (!parsed || Date.now() - (parsed.t || 0) > (FH_META_TTL[kind] || 0)) return undefined;
+        return parsed.v;
+      } catch { return undefined; }
+    }
+    function writeFhCache(kind, symbol, value) {
+      safeSetItem(`fh-${kind}-${symbol}`, JSON.stringify({ t: Date.now(), v: value }));
+    }
+    // กันการยิงซ้ำของสัญลักษณ์เดียวกันที่เกิดพร้อมกันจากหลายส่วนของหน้าจอ (single-flight)
+    const fhInflight = new Map();
+    function fhSingleFlight(key, fn) {
+      const existing = fhInflight.get(key);
+      if (existing) return existing;
+      const p = fn().finally(() => fhInflight.delete(key));
+      fhInflight.set(key, p);
+      return p;
+    }
+
+    async function fetchFundamentals(symbol, fhKey, opts = {}) {
       if (!fhKey) return null;
-      return fhQueue(async () => {
-        bumpFhCalls();
-        let res;
-        for (let attempt = 0; attempt < 2; attempt++) {
-          res = await fetch(`${FH_BASE}/stock/metric?symbol=${encodeURIComponent(symbol)}&metric=all&token=${fhKey}`);
-          if (isTransientFhError(res) && attempt === 0) {
-            // ตัวนี้มักถูกยิงหลังผ่านเกณฑ์เทคนิคมาแล้ว (เปลืองโควตา Twelve Data ไปก่อนหน้านี้แล้ว)
-            // จึงคุ้มที่จะรอสั้น ๆ แล้วลองซ้ำในคิวเดิม ดีกว่าปล่อยให้หุ้นตัวนี้หลุดคะแนนพื้นฐานไปเฉย ๆ
-            await new Promise((r) => setTimeout(r, fhMinIntervalMs * 2));
-            continue;
-          }
-          break;
-        }
-        const data = await res.json().catch(() => ({}));
-        return data.metric || {};
+      const cached = readFhCache("metric", symbol);
+      if (cached !== undefined) return cached;
+      return fhSingleFlight(`metric:${symbol}`, async () => {
+        const url = `${FH_BASE}/stock/metric?symbol=${encodeURIComponent(symbol)}&metric=all&token=${fhKey}`;
+        const { data } = await fhRequest(url, { priority: opts.priority ?? PRIORITY.BACKGROUND });
+        const metric = data?.metric || {};
+        writeFhCache("metric", symbol, metric);
+        return metric;
       });
     }
 
-    async function fetchProfile(symbol, fhKey) {
+    async function fetchProfile(symbol, fhKey, opts = {}) {
       if (!fhKey) return null;
-      return fhQueue(async () => {
-        bumpFhCalls();
-        let res;
-        for (let attempt = 0; attempt < 2; attempt++) {
-          res = await fetch(`${FH_BASE}/stock/profile2?symbol=${encodeURIComponent(symbol)}&token=${fhKey}`);
-          if (isTransientFhError(res) && attempt === 0) {
-            await new Promise((r) => setTimeout(r, fhMinIntervalMs * 2));
-            continue;
-          }
-          break;
-        }
-        return res.json().catch(() => null);
+      const cached = readFhCache("profile", symbol);
+      if (cached !== undefined) return cached;
+      return fhSingleFlight(`profile:${symbol}`, async () => {
+        const url = `${FH_BASE}/stock/profile2?symbol=${encodeURIComponent(symbol)}&token=${fhKey}`;
+        const { data } = await fhRequest(url, { priority: opts.priority ?? PRIORITY.BACKGROUND });
+        writeFhCache("profile", symbol, data || null);
+        return data || null;
       });
     }
 
@@ -1353,7 +1785,7 @@
     }
     function writeUniverseCache(items) {
       try {
-        localStorage.setItem(STOCK_UNIVERSE_CACHE_KEY, JSON.stringify({ items, fetchedAt: Date.now() }));
+        safeSetItem(STOCK_UNIVERSE_CACHE_KEY, JSON.stringify({ items, fetchedAt: Date.now() }));
       } catch (e) {
         console.error("stock universe cache save failed", e);
       }
@@ -1414,11 +1846,14 @@
       if (cached && cached.length > 0) return cached;
       if (!tdKey) return null;
       try {
-        const res = await tdQueue(() =>
-          fetch(`${TD_BASE}/stocks?type=Common%20Stock&apikey=${encodeURIComponent(tdKey)}`)
+        // endpoint รายชื่อหุ้น (reference data) ไม่คิด credit เหมือน endpoint ราคา แต่ยังนับเป็น
+        // คำขอในเพดานต่อนาที จึงส่งเข้าคิวด้วย priority ต่ำสุด (งานเบื้องหลัง) ไม่ให้แย่งคิวงานที่
+        // ผู้ใช้กำลังรอดูอยู่ตรงหน้า
+        const { data, res } = await tdRequest(
+          `${TD_BASE}/stocks?type=Common%20Stock&apikey=${encodeURIComponent(tdKey)}`,
+          { cost: 1, priority: PRIORITY.BACKGROUND, retries: 1 }
         );
         if (!res.ok) throw new Error(`Twelve Data /stocks HTTP ${res.status}`);
-        const data = await res.json();
         const rawList = Array.isArray(data?.data) ? data.data : [];
         if (rawList.length === 0) throw new Error("Twelve Data /stocks คืนรายชื่อว่างเปล่า");
         const diverse = buildDiverseUniverse(rawList, GLOBAL_UNIVERSE_TARGET_SIZE);
@@ -1740,18 +2175,30 @@
     //    Data ไม่ต้องไล่สแกนพูลทั้งหมดเสมอไป
     const WEEKLY_PICK_COUNT = 10;
     const SCAN_BUFFER = 30;
-    // จำนวนสัญลักษณ์ที่ยิงคำขอ Twelve Data /time_series (รายวัน) พร้อมกันต่อ batch ระหว่างสแกน
-    // เกณฑ์ทางเทคนิค (1 คำขอ HTTP ต่อก้อน แต่เสีย credit ตามจำนวนสัญลักษณ์ข้างในเท่าเดิม)
-    const TECH_SCAN_BATCH_SIZE = 30;
+    // จำนวนสัญลักษณ์ต่อก้อนระหว่างสแกนเกณฑ์ทางเทคนิค — เดิมตั้งตายตัวไว้ที่ 30 ซึ่ง "เกินเพดาน
+    // credit ต่อนาที" ของแผนฟรี (8 credit/นาที) เพราะคำขอ batch ของ Twelve Data เสีย credit เท่า
+    // จำนวนสัญลักษณ์ ก้อนละ 30 จึงโดนปฏิเสธ (429 run out of API credits) แทบทุกก้อน
+    // ตอนนี้อิงกับเพดานจริงของ Plan ที่ผู้ใช้ตั้งไว้ (ดู tdBatchSize) — ได้ก้อนใหญ่สุดเท่าที่ยิงผ่าน
+    // ได้จริงเสมอ ทั้งบนแผนฟรีและแผนเสียเงิน และยังทำให้เช็คเงื่อนไข Fast Stop ได้ถี่ขึ้นด้วย
+    const techScanBatchSize = () => tdBatchSize();
     // จำนวนสัญลักษณ์ที่ยิง Finnhub (metric + company-news) พร้อมกันต่อรอบ สำหรับหุ้นที่ผ่านเกณฑ์
-    // ทางเทคนิคแล้วเท่านั้น (fhQueue ยังคุมจังหวะยิงจริงไม่ให้เกิน fhMinIntervalMs/คำขออยู่ดี)
-    const FUND_SCAN_BATCH_SIZE = 10;
+    // ทางเทคนิคแล้วเท่านั้น — หุ้น 1 ตัวใช้ 2 คำขอ (metric + news) จึงคำนวณจากเพดานคำขอต่อนาที
+    // ของ Plan ที่ผู้ใช้ตั้งไว้จริง แทนค่าคงที่ 10 ที่ไม่สัมพันธ์กับโควตาเลย (แผนฟรี 60/นาที =
+    // ยิงได้ ~27 ตัว/รอบ ไม่ใช่ 10) ทำให้ผู้ใช้แผนเสียเงินได้ประโยชน์จากโควตาที่จ่ายไปจริง ๆ
+    const fundScanBatchSize = () => Math.max(1, Math.floor(fhQueue.effectiveLimit() / 2));
     // เก็บ "ผลสแกน" (ลิสต์หุ้นที่เข้าเกณฑ์) ของแต่ละสัปดาห์ไว้ใน localStorage โดยคีย์ด้วย weekKey
     // เพื่อให้สแกนพูลทั้งหมดแค่ "ครั้งเดียวต่อสัปดาห์" — เปิดเว็บใหม่หรือสลับแท็บกี่ครั้งก็ตาม
     // จะไม่ไล่สแกนพูลซ้ำอีก จนกว่าจะขึ้นสัปดาห์ใหม่ (weekKey เปลี่ยน) ถึงจะสแกนชุดใหม่โดยอัตโนมัติ
     // อัปเดตเวอร์ชันคีย์เป็น v7 เพื่อล้างผลสแกนสัปดาห์เก่าที่คัดด้วยเกณฑ์ "หุ้นดีราคาถูก" (P/E, P/B,
     // P/FCF) ทิ้งไปโดยอัตโนมัติ — บังคับให้สแกนใหม่ทั้งพูลด้วยเกณฑ์ "หุ้นเทรนด์ขาขึ้น" ชุดใหม่ทันที
     const WEEKLY_PICKS_STORE_KEY = "us-dash-weekly-picks-v7";
+    // จุดพักการสแกน (checkpoint) — เก็บ "ไล่สแกนไปถึงตำแหน่งไหนแล้ว" ของสัปดาห์ปัจจุบัน
+    // เหตุผล: พูลหุ้นมีหลักพันตัว แต่แผนฟรีของ Twelve Data มีแค่ 800 credit/วัน จึงเป็นไปไม่ได้เลย
+    // ที่จะสแกนจบในวันเดียว เดิมพอโควตาหมดกลางคัน ผลที่สแกนได้บางส่วนจะถูก "ล็อกไว้ทั้งสัปดาห์"
+    // (เพราะโค้ดบันทึกผลตอนจบฟังก์ชันเสมอ) ทำให้ทั้งสัปดาห์นั้นได้หุ้นไม่ครบและไม่มีทางสแกนต่อ
+    // ตอนนี้ถ้าหยุดเพราะโควตา จะบันทึกเป็น checkpoint แทน แล้ววันถัดไปสแกนต่อจากตำแหน่งเดิม
+    // จนกว่าจะครบ SCAN_BUFFER หรือหมดพูล ถึงจะล็อกผลจริง
+    const SCAN_CHECKPOINT_KEY = "us-dash-scan-checkpoint-v1";
 
     /* ------------------------------------------------------------
        เกณฑ์การคัดกรองหุ้นแนะนำประจำสัปดาห์ — "หุ้นกำลังเป็นเทรนด์ (Trending)" ที่มีโอกาสอยู่ในขาขึ้น
@@ -1861,24 +2308,17 @@
     // ตัวแทน "ความสนใจจากนักลงทุน" (ข้อ 3) เพราะระบบนี้ไม่มี API เชื่อมกับโซเชียล/ฟอรัมลงทุนโดยตรง
     async function fetchCompanyNewsCount7d(symbol, fhKey) {
       if (!fhKey) return null;
-      return fhQueue(async () => {
-        bumpFhCalls();
+      const cached = readFhCache("news", symbol);
+      if (cached !== undefined) return cached;
+      return fhSingleFlight(`news:${symbol}`, async () => {
         const to = new Date();
         const from = new Date(to.getTime() - NEWS_LOOKBACK_DAYS * 24 * 60 * 60 * 1000);
         const fmt = (d) => d.toISOString().slice(0, 10);
-        let res;
-        for (let attempt = 0; attempt < 2; attempt++) {
-          res = await fetch(
-            `${FH_BASE}/company-news?symbol=${encodeURIComponent(symbol)}&from=${fmt(from)}&to=${fmt(to)}&token=${fhKey}`
-          );
-          if (isTransientFhError(res) && attempt === 0) {
-            await new Promise((r) => setTimeout(r, fhMinIntervalMs * 2));
-            continue;
-          }
-          break;
-        }
-        const data = await res.json().catch(() => null);
-        return Array.isArray(data) ? data.length : 0;
+        const url = `${FH_BASE}/company-news?symbol=${encodeURIComponent(symbol)}&from=${fmt(from)}&to=${fmt(to)}&token=${fhKey}`;
+        const { data } = await fhRequest(url, { priority: PRIORITY.BACKGROUND });
+        const count = Array.isArray(data) ? data.length : 0;
+        writeFhCache("news", symbol, count);
+        return count;
       }).catch(() => null);
     }
 
@@ -2132,6 +2572,8 @@
     const WeeklyRecommendedPanel = React.memo(function WeeklyRecommendedPanel({ tdKey, fhKey, dataMap, loadSymbol, loadSymbolsBatch, loadFundamentalsOnly, symbols, onAdd }) {
       const [loading, setLoading] = useState(false);
       const [scanProgress, setScanProgress] = useState({ done: 0, total: 0, found: 0 });
+      // true = การสแกนถูกพักไว้เพราะโควตา Twelve Data รายวันหมด (ไม่ใช่ error — จะไปต่อเองวันถัดไป)
+      const [quotaPaused, setQuotaPaused] = useState(false);
       // fundamentalsMap เก็บ object metric ดิบจาก Finnhub (/stock/metric?metric=all) ต่อ symbol —
       // ใช้คำนวณคะแนนเสริมจากปัจจัยพื้นฐาน (ข้อ 4 — Revenue/EPS Growth + P/E สำหรับป้ายความเสี่ยง)
       const [fundamentalsMap, setFundamentalsMap] = useState({});
@@ -2196,17 +2638,23 @@
         };
       }, [universe]);
 
-      // ดึงแท่งราคา "รายวัน" ของหลายสัญลักษณ์ทีละก้อน (TECH_SCAN_BATCH_SIZE ตัว/คำขอ) แล้วคำนวณผล
+      // ดึงแท่งราคา "รายวัน" ของหลายสัญลักษณ์ทีละก้อน (ขนาดก้อนอิงเพดาน credit จริง) แล้วคำนวณผล
       // วิเคราะห์เทคนิค (computeTechnicalSignal) กลับมาเป็น map ต่อ symbol — ใช้ทั้งตอนสแกนใหม่และ
       // ตอนโหลดผลลัพธ์ที่ "ล็อก" ไว้แล้วของสัปดาห์นี้ (เพื่อให้การ์ดแสดงตัวเลข Volume/โมเมนตัมได้)
       const loadTechnicalSignals = useCallback(async (symbolsArr) => {
         const out = {};
-        for (let i = 0; i < symbolsArr.length; i += TECH_SCAN_BATCH_SIZE) {
-          const chunk = symbolsArr.slice(i, i + TECH_SCAN_BATCH_SIZE);
+        const techChunk = techScanBatchSize();
+        for (let i = 0; i < symbolsArr.length; i += techChunk) {
+          const chunk = symbolsArr.slice(i, i + techChunk);
           let seriesMap = {};
           try {
             seriesMap = await fetchSeriesBatch(chunk, tdKey, "1day");
           } catch (e) {
+            // โควตารายวันหมด = ยิงต่อไปก็ได้แค่ error ซ้ำ ๆ — หยุดทันทีแล้วคืนเท่าที่ได้มา
+            if (e?.isQuotaExhausted) {
+              console.warn("[Scanner] หยุดสแกนเพราะโควตา Twelve Data รายวันหมดแล้ว");
+              break;
+            }
             console.warn("[Scanner] fetchSeriesBatch (รายวัน) ล้มเหลวทั้งก้อน", e);
           }
           for (const sym of chunk) {
@@ -2248,28 +2696,45 @@
             return;
           }
 
-          setScanProgress({ done: 0, total: rotationPool.length, found: 0 });
+          // มี checkpoint ของสัปดาห์นี้ค้างอยู่ไหม (= วันก่อนสแกนค้างไว้เพราะโควตาหมด) ถ้ามีก็สแกนต่อ
+          // จากตำแหน่งเดิม พร้อมหิ้วรายชื่อที่ผ่านเกณฑ์มาแล้วติดมาด้วย ไม่ต้องเริ่มนับหนึ่งใหม่
+          const checkpoint = await loadStore(SCAN_CHECKPOINT_KEY, null);
+          const resumable = checkpoint && checkpoint.weekKey === today.weekKey && Number.isFinite(checkpoint.cursor);
+          let cursor = resumable ? Math.max(0, checkpoint.cursor) : 0;
+          let doneCount = resumable ? (checkpoint.done || cursor) : 0;
+          const shortlistSymbols = resumable && Array.isArray(checkpoint.shortlist) ? [...checkpoint.shortlist] : [];
+          let foundCount = shortlistSymbols.length;
+          if (resumable) {
+            console.log(`[Scanner] สแกนต่อจากจุดที่ค้างไว้: ตำแหน่ง ${cursor}/${rotationPool.length} (ผ่านเกณฑ์มาแล้ว ${foundCount} ตัว)`);
+          }
+          setQuotaPaused(false);
+          setScanProgress({ done: doneCount, total: rotationPool.length, found: foundCount });
 
-          let doneCount = 0;
-          let foundCount = 0;
-          const shortlistSymbols = [];
+          let stoppedByQuota = false;
           const techResults = {}; // สะสมผลวิเคราะห์เทคนิคของทุกตัวที่เช็กระหว่างสแกนรอบนี้ (ไม่ใช่แค่ตัวที่ผ่าน)
 
-          // ไล่สแกนเป็น "ก้อน" (batch) ทีละ TECH_SCAN_BATCH_SIZE ตัว — ยิง Twelve Data /time_series
-          // (รายวัน) พร้อมกันหลายสัญลักษณ์ต่อรอบ (tdQueue ยังคุมจังหวะยิงจริงไม่ให้เกิน tdMinIntervalMs/
-          // คำขอเหมือนเดิมทุกประการ แค่ไม่ต้อง await ทีละตัวตามลำดับ) แล้วหยุดทันทีเมื่อพบครบ
+          // ไล่สแกนเป็น "ก้อน" (batch) ขนาดเท่าเพดาน credit ต่อนาทีที่ยิงผ่านได้จริง — ยิง Twelve Data /time_series
+          // (รายวัน) พร้อมกันหลายสัญลักษณ์ต่อรอบ (tdQueue ยังคุมไม่ให้ credit ที่ใช้ในแต่ละนาทีเกินเพดาน
+          // ของ Plan อยู่ดี แค่ไม่ต้อง await ทีละตัวตามลำดับ) แล้วหยุดทันทีเมื่อพบครบ
           // SCAN_BUFFER ตัว (Fast Stop) เพื่อประหยัดโควตา Twelve Data ไม่ต้องไล่สแกนพูลทั้ง 3,000
           // ตัวเสมอไป
+          const techChunk = techScanBatchSize();
           outer:
-          for (let i = 0; i < rotationPool.length; i += TECH_SCAN_BATCH_SIZE) {
+          for (let i = cursor; i < rotationPool.length; i += techChunk) {
             if (foundCount >= SCAN_BUFFER) break;
+            cursor = i; // ตำแหน่งของก้อนที่กำลังจะยิง — ใช้เป็นจุดกลับมาสแกนต่อถ้าโควตาหมดตรงนี้
 
-            const batchItems = rotationPool.slice(i, i + TECH_SCAN_BATCH_SIZE);
+            const batchItems = rotationPool.slice(i, i + techChunk);
             const symbolsChunk = batchItems.map((it) => it.symbol);
             let seriesMap = {};
             try {
               seriesMap = await fetchSeriesBatch(symbolsChunk, tdKey, "1day");
             } catch (e) {
+              if (e?.isQuotaExhausted) {
+                console.warn("[Scanner] พักการสแกน: โควตา Twelve Data รายวันหมด — บันทึกจุดพักไว้แล้ว จะสแกนต่อเองในวันถัดไป");
+                stoppedByQuota = true;
+                break outer;
+              }
               console.warn("[Scanner] fetchSeriesBatch (รายวัน) ล้มเหลวทั้งก้อน", e);
             }
 
@@ -2289,18 +2754,20 @@
                 break outer;
               }
             }
+            cursor = i + techChunk; // ก้อนนี้สำเร็จแล้ว เลื่อนจุดกลับมาสแกนต่อไปข้างหน้า
             setScanProgress({ done: doneCount, total: rotationPool.length, found: foundCount });
           }
           setScanProgress({ done: doneCount, total: rotationPool.length, found: foundCount });
           setTechnicalMap((prev) => ({ ...prev, ...techResults }));
 
           // ดึงคะแนนเสริม (ปัจจัยพื้นฐาน + ข่าว) เฉพาะหุ้นที่ "ผ่านเกณฑ์เทคนิคแล้วเท่านั้น" เป็นก้อน
-          // ทีละ FUND_SCAN_BATCH_SIZE ตัว — ลดจำนวนเรียก Finnhub จากหลักพันเหลือแค่หลักสิบ (เท่าจำนวน
+          // ทีละ fundScanBatchSize() ตัว — ลดจำนวนเรียก Finnhub จากหลักพันเหลือแค่หลักสิบ (เท่าจำนวน
           // หุ้นที่ผ่านเกณฑ์เทคนิคจริง) ต่อรอบสแกน
           const fundResults = {};
           const newsResults = {};
-          for (let i = 0; i < shortlistSymbols.length; i += FUND_SCAN_BATCH_SIZE) {
-            const chunk = shortlistSymbols.slice(i, i + FUND_SCAN_BATCH_SIZE);
+          const fundChunkSize = fundScanBatchSize();
+          for (let i = 0; i < shortlistSymbols.length; i += fundChunkSize) {
+            const chunk = shortlistSymbols.slice(i, i + fundChunkSize);
             const pairs = await Promise.all(
               chunk.map(async (sym) => {
                 const [fund, news] = await Promise.all([
@@ -2328,6 +2795,20 @@
             await Promise.all(shortlistSymbols.map((sym) => loadFundamentalsOnly(sym)));
           }
 
+          if (stoppedByQuota) {
+            // ยังสแกนไม่จบ — บันทึกเป็น "จุดพัก" ไม่ใช่ผลสุดท้าย เพื่อไม่ให้ชุดหุ้นที่ยังไม่ครบถูก
+            // ล็อกค้างไว้ทั้งสัปดาห์ ครั้งหน้าที่เปิดแอป (โควตาวันใหม่) จะสแกนต่อจากตรงนี้เอง
+            setQuotaPaused(true);
+            await saveStore(SCAN_CHECKPOINT_KEY, {
+              weekKey: today.weekKey,
+              cursor,
+              done: doneCount,
+              shortlist: shortlistSymbols,
+              savedAt: Date.now(),
+            });
+            return;
+          }
+
           // "ล็อก" ผลสแกนของสัปดาห์นี้ไว้ใน localStorage — ครั้งต่อไปที่เปิดเว็บมาดูหรือสลับแท็บ
           // (หรือแม้แต่มาเปิดใหม่ทั้งแอปในสัปดาห์เดียวกัน) จะใช้ชุดหุ้นนี้ทันทีโดยไม่สแกนซ้ำ จนกว่า
           // จะขึ้นสัปดาห์ใหม่ (weekKey เปลี่ยน) ถึงจะสแกนชุดใหม่โดยอัตโนมัติ
@@ -2336,6 +2817,8 @@
             symbols: shortlistSymbols,
             savedAt: Date.now(),
           });
+          // สแกนจบสมบูรณ์แล้ว ไม่ต้องเก็บจุดพักไว้อีก
+          try { localStorage.removeItem(SCAN_CHECKPOINT_KEY); } catch {}
         } finally {
           setLoading(false);
         }
@@ -2421,6 +2904,17 @@
           {loading && (
             <div className="bg-zinc-950/80 border border-zinc-800 rounded-lg p-3 text-center text-xs text-amber-300 font-mono">
               ⚡ กำลังสแกนจากพูลหุ้นทั่วโลก... พบผู้เข้าเกณฑ์เทคนิคแล้ว {scanProgress.found}/{SCAN_BUFFER} ตัว (เช็กไปแล้ว {scanProgress.done}/{scanProgress.total} ตัว)
+            </div>
+          )}
+
+          {!loading && quotaPaused && (
+            <div className="bg-blue-950/30 border border-blue-800/50 rounded-lg p-3 text-xs text-blue-200 leading-relaxed">
+              ⏸️ พักการสแกนไว้ชั่วคราว เพราะใช้โควตา Twelve Data ครบตามที่ตั้งไว้สำหรับวันนี้แล้ว —
+              สแกนไปได้ {scanProgress.done}/{scanProgress.total} ตัว พบผู้เข้าเกณฑ์ {scanProgress.found}/{SCAN_BUFFER} ตัว
+              <div className="text-blue-300/70 mt-1">
+                ระบบบันทึกจุดที่ค้างไว้แล้ว เปิดแอปอีกครั้งในวันถัดไปจะสแกนต่อจากตรงนี้เอง ไม่ต้องเริ่มใหม่ —
+                หุ้นที่ผ่านเกณฑ์แล้วด้านล่างยังดูได้ตามปกติ (ถ้าต้องการให้จบเร็วขึ้น ปรับเพดานโควตารายวันในหน้าตั้งค่า ⚙ ให้ตรงกับ Plan ที่ใช้จริง)
+              </div>
             </div>
           )}
 
@@ -2607,7 +3101,7 @@
       if (clean.length === 0) return;
       const next = [...loadTxLedger(), ...clean];
       try {
-        localStorage.setItem(TX_LEDGER_KEY, JSON.stringify(next));
+        safeSetItem(TX_LEDGER_KEY, JSON.stringify(next));
       } catch (e) {
         console.error("บันทึกประวัติการทำรายการไม่สำเร็จ", e);
       }
@@ -2624,7 +3118,7 @@
 
     function saveCachedDailyHistory(symbol, payload) {
       try {
-        localStorage.setItem(HIST_CACHE_PREFIX + symbol, JSON.stringify(payload));
+        safeSetItem(HIST_CACHE_PREFIX + symbol, JSON.stringify(payload));
       } catch (e) {
         console.error("cache save failed", e);
       }
@@ -4847,7 +5341,7 @@
 
         try {
           const allSymbols = ["SPY", ...SECTOR_ETFS.map((sec) => sec.symbol)];
-          const seriesMap = await fetchSeriesBatch(allSymbols, tdKey, "1week", 70);
+          const seriesMap = await fetchSeriesBatch(allSymbols, tdKey, "1week", 70, { priority: PRIORITY.NORMAL });
           setProgress(100);
 
           const spySeries = seriesMap["SPY"];
@@ -5186,6 +5680,70 @@
     });
 
     /* ============================================================
+       QUOTA METER — แถบแสดงการใช้โควตาสองฝั่งแบบเรียลไทม์
+       ------------------------------------------------------------
+       เดิมหัวแอปโชว์แค่ "จำนวนครั้งที่ใช้วันนี้" เป็นตัวเลขลอย ๆ ซึ่งไม่ช่วยให้รู้เลยว่าใกล้ชนเพดาน
+       หรือยัง และภาระงานกระจายไปสองฝั่งสมดุลแค่ไหน แถบนี้แสดงครบในที่เดียว:
+         • หลอดบน = โควตา "ต่อนาที" ที่ใช้ไปในหน้าต่าง 60 วินาทีล่าสุด (เห็นจังหวะยิงจริง)
+         • หลอดล่าง = โควตา "ต่อวัน" ที่ใช้ไป (ตัวจำกัดที่แท้จริงของแผนฟรี Twelve Data)
+         • เลขในวงเล็บ = จำนวนงานที่รอคิวอยู่ ณ ตอนนั้น (รู้ทันทีว่าฝั่งไหนกำลังเป็นคอขวด)
+         • แถบสัดส่วนขวาสุด = สัดส่วนภาระงานวันนี้ระหว่าง TD กับ FH (เป้าหมายของการ balance)
+       ============================================================ */
+    const QuotaBar = ({ used, limit, color }) => {
+      const pct = limit > 0 ? Math.min(100, (used / limit) * 100) : 0;
+      const tone = pct >= 90 ? "bg-red-500" : pct >= 70 ? "bg-amber-400" : color;
+      return (
+        <div className="h-1 w-full rounded-full bg-zinc-800 overflow-hidden">
+          <div className={`h-full ${tone} transition-all duration-500`} style={{ width: `${pct}%` }} />
+        </div>
+      );
+    };
+
+    const QuotaMeter = React.memo(function QuotaMeter({ quota, tdCallsToday, fhCallsToday }) {
+      const totalToday = tdCallsToday + fhCallsToday;
+      const tdShare = totalToday > 0 ? Math.round((tdCallsToday / totalToday) * 100) : 0;
+      const rows = [
+        { key: "td", label: "TD", color: "bg-blue-400", text: "text-blue-300", stat: quota.td, today: tdCallsToday,
+          hint: "Twelve Data — สงวนไว้สำหรับแท่งราคาย้อนหลัง (candles) ซึ่งเป็นงานที่มีแต่ฝั่งนี้ทำได้ นับเป็น credit ต่อสัญลักษณ์" },
+        { key: "fh", label: "FH", color: "bg-emerald-400", text: "text-emerald-300", stat: quota.fh, today: fhCallsToday,
+          hint: "Finnhub — รับภาระราคาล่าสุด/งบการเงิน/ข่าว/โลโก้ เพราะโควตาต่อนาทีสูงกว่าและไม่จำกัดรายวัน" },
+      ];
+      return (
+        <div className="flex items-center gap-3 text-[11px] font-mono text-zinc-400 border border-zinc-800 bg-zinc-900/70 px-3 py-1.5 rounded-lg">
+          <div className="space-y-1.5">
+            {rows.map((r) => (
+              <div key={r.key} className="flex items-center gap-2" title={r.hint}>
+                <span className={`w-6 ${r.text} font-semibold`}>{r.label}</span>
+                <div className="w-20">
+                  <QuotaBar used={r.stat.minuteUsed} limit={r.stat.minuteLimit} color={r.color} />
+                </div>
+                <span className="w-16 text-zinc-500">
+                  {r.stat.minuteUsed}/{r.stat.minuteLimit}<span className="text-zinc-700">/น.</span>
+                </span>
+                <div className="w-20">
+                  <QuotaBar used={r.today} limit={r.stat.dayLimit} color={r.color} />
+                </div>
+                <span className="w-20 text-zinc-500">
+                  {r.today}{r.stat.dayLimit ? `/${r.stat.dayLimit}` : ""}<span className="text-zinc-700">/วัน</span>
+                </span>
+                {r.stat.queued > 0 && (
+                  <span className="text-amber-400/80" title="จำนวนคำขอที่รอคิวอยู่ตอนนี้">คิว {r.stat.queued}</span>
+                )}
+              </div>
+            ))}
+          </div>
+          <div className="pl-2 border-l border-zinc-800 text-center" title="สัดส่วนภาระงานวันนี้ระหว่างสองแหล่งข้อมูล — ยิ่งฝั่ง Finnhub มาก แปลว่าสงวน credit ของ Twelve Data ไว้ทำแท่งราคาได้มาก">
+            <div className="flex h-1.5 w-16 rounded-full overflow-hidden bg-zinc-800">
+              <div className="bg-blue-400" style={{ width: `${tdShare}%` }} />
+              <div className="bg-emerald-400" style={{ width: `${100 - tdShare}%` }} />
+            </div>
+            <div className="text-[10px] text-zinc-500 mt-1">{tdShare}% / {100 - tdShare}%</div>
+          </div>
+        </div>
+      );
+    });
+
+    /* ============================================================
        MAIN APP
        ============================================================ */
     function App() {
@@ -5205,6 +5763,11 @@
       const [tdRateDraft, setTdRateDraft] = useState("8");
       const [fhRatePerMin, setFhRatePerMin] = useState(60);
       const [fhRateDraft, setFhRateDraft] = useState("60");
+      // เพดาน "ต่อวัน" ของแต่ละเจ้า — Twelve Data แผนฟรีจำกัด 800 credit/วัน ซึ่งเป็นตัวจำกัดที่แท้จริง
+      // ของแอปนี้ (ไม่ใช่เพดานต่อนาที) ส่วน Finnhub แผนฟรีไม่จำกัดรายวัน = ใส่ 0 เพื่อบอกว่าไม่จำกัด
+      const [tdDailyDraft, setTdDailyDraft] = useState("800");
+      const [fhDailyDraft, setFhDailyDraft] = useState("0");
+      const [quota, setQuota] = useState(() => getQuotaSnapshot());
       const [showSettings, setShowSettings] = useState(false);
       const [tab, setTab] = useState("watchlist");
       const [input, setInput] = useState("");
@@ -5220,8 +5783,11 @@
 
       useEffect(() => {
         (async () => {
+          // กวาดแคชที่หมดอายุทิ้งก่อนเริ่มใช้งาน — กัน localStorage เต็มจนแคชหยุดทำงานเงียบ ๆ
+          // (แคชที่พังคือสาเหตุอันดับหนึ่งที่ทำให้โควตา API ถูกเผาทิ้งโดยไม่มีใครสังเกต)
+          pruneStorage();
           const [keys, wl] = await Promise.all([
-            loadStore("us-dash-keys", { td: "", fh: "", gemini: "", tdRate: 8, fhRate: 60 }),
+            loadStore("us-dash-keys", { td: "", fh: "", gemini: "", tdRate: 8, fhRate: 60, tdDaily: 800, fhDaily: 0 }),
             loadStore("us-dash-watchlist", DEFAULT_WATCHLIST),
           ]);
           setTdKey(keys.td || "");
@@ -5238,6 +5804,12 @@
           setFhRatePerMin(fhRate);
           setFhRateDraft(String(fhRate));
           setFhRateLimit(fhRate);
+          const tdDaily = keys.tdDaily != null ? keys.tdDaily : 800;
+          const fhDaily = keys.fhDaily != null ? keys.fhDaily : 0;
+          setTdDailyDraft(String(tdDaily));
+          setFhDailyDraft(String(fhDaily));
+          setTdDailyLimit(tdDaily);
+          setFhDailyLimit(fhDaily);
           setSymbols(wl);
 
           const cachedMap = {};
@@ -5253,10 +5825,16 @@
         })();
       }, []);
 
+      // อัปเดตตัวเลขโควตาถี่ขึ้น (ทุก 2 วินาที) เพราะตอนนี้มีทั้งยอดใช้ต่อนาทีและความยาวคิวให้ดู
+      // ด้วย — ผู้ใช้จะเห็นได้ทันทีว่าตอนนี้งานกองอยู่ที่ฝั่งไหน และเหลือโควตาวันละเท่าไร
       useEffect(() => {
-        const tick = () => { setTdCallsToday(getTdCallsToday()); setFhCallsToday(getFhCallsToday()); };
+        const tick = () => {
+          setTdCallsToday(getTdCallsToday());
+          setFhCallsToday(getFhCallsToday());
+          setQuota(getQuotaSnapshot());
+        };
         tick();
-        const id = setInterval(tick, 10000);
+        const id = setInterval(tick, 2000);
         return () => clearInterval(id);
       }, []);
 
@@ -5342,15 +5920,11 @@
       // ~tdMinIntervalMs ต่อ "1 คำขอ HTTP" (บนแพ็กเกจฟรี ~7.7 วินาที/คำขอ = 8 คำขอ/นาที) ทำให้
       // การไล่สแกนพูล 4,000 ตัวที่ไม่ได้อยู่ในแคชเลยต้องใช้เวลารวมหลายชั่วโมง (4,000 x ~7.7s ≈ 8.5
       // ชม.) ผู้ใช้จึงเห็นว่าสแกนไปได้แค่ ~200 ตัวแล้วยังไม่จบ
-      // ทางแก้: ใช้ fetchSeriesBatch() ที่มีอยู่แล้ว (เดิมใช้แค่กับ Sector Rotation) มารวมหลาย
-      // สัญลักษณ์เป็น "1 คำขอ HTTP" ต่อ 1 คิว — Twelve Data นับเป็นคำขอเดียวต่อ rate limit แม้จะมี
-      // หลายสัญลักษณ์อยู่ข้างในก็ตาม (ยังเสีย credit ตามจำนวนสัญลักษณ์เท่าเดิมทุกประการ แค่ไม่ต้อง
-      // รอคิวทีละตัว) ทำให้เวลารอคิวลดลงเหลือ ~1/SCAN_BATCH_SIZE ของเดิม (เช่น 30 สัญลักษณ์/คำขอ
-      // ก็เร็วขึ้น ~30 เท่า) ฟังก์ชันนี้คืนค่า map ต่อสัญลักษณ์ตรง ๆ (ไม่ต้องพึ่ง state ของ React ที่
-      // เป็น async) เหมือนกับที่ loadSymbol() ทำไว้เดิม เพื่อให้ผู้เรียกเช็คเงื่อนไข "เจอครบ
-      // SCAN_BUFFER หรือยัง" ได้ถูกต้องทันที
-      const SCAN_BATCH_SIZE = 30; // จำนวนสัญลักษณ์ต่อคำขอ batch หนึ่งครั้ง — กันไม่ให้ URL ยาวเกินไป
-      // และยังให้ scanProgress อัปเดตถี่พอที่จะเห็นความคืบหน้าระหว่างสแกน
+      // ทางแก้: ส่งทุกสัญลักษณ์เข้า fetchSeriesBatch() ซึ่งตอนนี้วิ่งผ่าน "ตัวรวบคำขอ" กลาง
+      // (requestSeries) ที่จะรวมสัญลักษณ์ที่ขอในจังหวะใกล้กันให้เป็นคำขอเดียว ยุบสัญลักษณ์ซ้ำทิ้ง
+      // และตัดขนาดก้อนตามเพดาน credit จริงของ Plan ให้เอง — จุดเรียกไม่ต้องเดาขนาดก้อนอีกต่อไป
+      // ฟังก์ชันนี้คืนค่า map ต่อสัญลักษณ์ตรง ๆ (ไม่ต้องพึ่ง state ของ React ที่เป็น async) เพื่อให้
+      // ผู้เรียกเช็คเงื่อนไข "เจอครบ SCAN_BUFFER หรือยัง" ได้ถูกต้องทันที
       const loadSymbolsBatch = useCallback(async (symbolsArr, timeframe = DEFAULT_TIMEFRAME) => {
         const key = tdKey.trim();
         const results = {};
@@ -5370,12 +5944,17 @@
           }
         }
 
-        for (let i = 0; i < toFetch.length; i += SCAN_BATCH_SIZE) {
-          const chunk = toFetch.slice(i, i + SCAN_BATCH_SIZE);
+        const chunkSize = tdBatchSize();
+        for (let i = 0; i < toFetch.length; i += chunkSize) {
+          const chunk = toFetch.slice(i, i + chunkSize);
           let seriesMap = {};
           try {
             seriesMap = await fetchSeriesBatch(chunk, key, timeframe);
           } catch (e) {
+            if (e?.isQuotaExhausted) {
+              console.warn("loadSymbolsBatch: โควตา Twelve Data รายวันหมด — หยุดโหลดส่วนที่เหลือ");
+              break;
+            }
             console.warn("loadSymbolsBatch: fetchSeriesBatch ล้มเหลวทั้งก้อน", e);
           }
           for (const symbol of chunk) {
@@ -5473,7 +6052,12 @@
         if (!fh) return false; // ไม่มี Finnhub key ให้ผู้เรียก fallback ไปใช้ full refresh แทน
         try {
           const existing = dataMapRef.current[symbol] || {};
-          const quote = await fetchQuoteBalanced(symbol, { fhKey: fh, fallbackSeries: existing.series });
+          const quote = await fetchQuoteBalanced(symbol, {
+            fhKey: fh,
+            tdKey: tdKey.trim(),
+            fallbackSeries: existing.series,
+            priority: PRIORITY.INTERACTIVE,
+          });
           if (!quote) return false;
           setEntry(symbol, { quote, stale: false });
           saveCachedEntry(symbol, { ...existing, quote });
@@ -5482,7 +6066,7 @@
           console.warn(`Quick quote refresh ล้มเหลวสำหรับ ${symbol}:`, e.message);
           return false; // เงียบไว้โดยตั้งใจ ไม่ทับ error ของข้อมูลกราฟหลักด้วยความล้มเหลวของการอัปเดตราคาเบา ๆ
         }
-      }, [fhKey, setEntry]);
+      }, [fhKey, tdKey, setEntry]);
 
       // กติกาตายตัวของ Watchlist: รายชื่อหุ้นใน Watchlist (state `symbols`) จะถูกแก้ไข
       // ได้แค่ 2 ทางเท่านั้นคือ addSymbol (ผู้ใช้กดเพิ่มเอง) และ removeSymbol (ผู้ใช้กดลบเอง)
@@ -5541,6 +6125,8 @@
         const gemini = geminiKeyDraft.trim();
         const rate = Math.max(1, parseInt(tdRateDraft, 10) || 8);
         const fhRate = Math.max(1, parseInt(fhRateDraft, 10) || 60);
+        const tdDaily = Math.max(0, parseInt(tdDailyDraft, 10) || 0);
+        const fhDaily = Math.max(0, parseInt(fhDailyDraft, 10) || 0);
         if (td !== tdKey) setTdKey(td);
         if (fh !== fhKey) setFhKey(fh);
         if (gemini !== geminiKey) setGeminiKey(gemini);
@@ -5550,7 +6136,12 @@
         setFhRatePerMin(fhRate);
         setFhRateDraft(String(fhRate));
         setFhRateLimit(fhRate);
-        saveStore("us-dash-keys", { td, fh, gemini, tdRate: rate, fhRate });
+        setTdDailyLimit(tdDaily);
+        setFhDailyLimit(fhDaily);
+        setTdDailyDraft(String(tdDaily));
+        setFhDailyDraft(String(fhDaily));
+        setQuota(getQuotaSnapshot());
+        saveStore("us-dash-keys", { td, fh, gemini, tdRate: rate, fhRate, tdDaily, fhDaily });
       };
 
       const exportBackup = () => {
@@ -5598,6 +6189,12 @@
               setFhRatePerMin(fhRate);
               setFhRateDraft(String(fhRate));
               setFhRateLimit(fhRate);
+              const tdDaily = parsed.keys.tdDaily != null ? parsed.keys.tdDaily : 800;
+              const fhDaily = parsed.keys.fhDaily != null ? parsed.keys.fhDaily : 0;
+              setTdDailyDraft(String(tdDaily));
+              setFhDailyDraft(String(fhDaily));
+              setTdDailyLimit(tdDaily);
+              setFhDailyLimit(fhDaily);
             }
             alert("นำเข้าข้อมูลสำรองสำเร็จเรียบร้อย!");
             window.location.reload();
@@ -5639,12 +6236,7 @@
               <div className="text-[11px] text-zinc-500">Twelve Data (แท่งราคา & อินดิเคเตอร์) | Finnhub (ราคาล่าสุด & งบการเงิน & โลโก้)</div>
             </div>
             <div className="ml-auto flex items-center gap-2">
-              <span className="text-xs font-mono text-zinc-400 border border-zinc-800 bg-zinc-900/70 px-2.5 py-1.5 rounded-lg flex items-center gap-1.5" title="Twelve Data ใช้สำหรับดึงแท่งราคาย้อนหลัง (candles) เพื่อคำนวณแนวรับ/แนวต้าน/EMA/RSI/MACD เท่านั้น ส่วนราคาล่าสุดแบบรายวันจะดึงผ่าน Finnhub แทนเพื่อลดภาระ Twelve Data">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 live-dot" />
-                TD: <strong className="text-blue-300">{tdCallsToday}</strong> ({tdRatePerMin}/นาที)
-                <span className="text-zinc-700 mx-1">|</span>
-                FH: <strong className="text-emerald-300">{fhCallsToday}</strong> ({fhRatePerMin}/นาที)
-              </span>
+              <QuotaMeter quota={quota} tdCallsToday={tdCallsToday} fhCallsToday={fhCallsToday} />
               <button
                 onClick={exportBackup}
                 className="flex items-center gap-1 text-xs bg-zinc-900/70 hover:bg-zinc-800 border border-zinc-800 hover:border-zinc-700 px-2.5 py-1.5 rounded-lg text-zinc-300 transition-colors"
@@ -5732,6 +6324,40 @@
                   />
                   <div className="text-[10px] text-zinc-500 mt-1">แผนฟรี ≈ 60 • ปรับสูงขึ้นได้ถ้าใช้ Plan เสียเงิน เพื่อดึงงบการเงิน/ข่าว/ราคาล่าสุดเร็วขึ้นและลดภาระ Twelve Data ลงไปอีก</div>
                 </div>
+                <div>
+                  <label className="text-zinc-400 block mb-1">
+                    Twelve Data: โควตา credit ต่อวัน
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    value={tdDailyDraft}
+                    onChange={(e) => setTdDailyDraft(e.target.value)}
+                    className="w-28 bg-zinc-950 border border-zinc-800 rounded px-3 py-1.5 font-mono text-zinc-100"
+                    placeholder="800"
+                  />
+                  <div className="text-[10px] text-zinc-500 mt-1">แผนฟรี = 800 • ใส่ 0 = ไม่จำกัด • ระบบจะหยุดยิงเองเมื่อใกล้ชนเพดาน แล้วย้ายงานที่ทำได้ไปฝั่ง Finnhub แทน</div>
+                </div>
+                <div>
+                  <label className="text-zinc-400 block mb-1">
+                    Finnhub: โควตาคำขอต่อวัน
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    value={fhDailyDraft}
+                    onChange={(e) => setFhDailyDraft(e.target.value)}
+                    className="w-28 bg-zinc-950 border border-zinc-800 rounded px-3 py-1.5 font-mono text-zinc-100"
+                    placeholder="0"
+                  />
+                  <div className="text-[10px] text-zinc-500 mt-1">แผนฟรีไม่จำกัดรายวัน = ใส่ 0 • ใส่ตัวเลขถ้า Plan ของคุณมีเพดานรายวัน</div>
+                </div>
+              </div>
+              <div className="text-[10px] text-zinc-500 leading-relaxed border-t border-zinc-800 pt-2">
+                ระบบจัดสรรโควตาจะยิงคำขอพร้อมกันได้จนเต็มเพดานต่อนาทีของแต่ละเจ้า (ไม่ใช่รอเว้นจังหวะทีละคำขอแบบเดิม
+                ซึ่งเสียโควตาไปกับเวลารอเครือข่าย) รวมคำขอหลายสัญลักษณ์ให้เป็นคำขอเดียวโดยอัตโนมัติ และเลือกแหล่งข้อมูล
+                ของ "ราคาล่าสุด" ตามโควตาที่เหลือจริงของทั้งสองฝั่ง ณ ขณะนั้น — ตัวเลขที่กรอกตรงนี้จึงมีผลโดยตรงกับ
+                ความเร็วในการสแกน ยิ่งกรอกตรงกับ Plan จริงยิ่งใช้โควตาได้เต็มโดยไม่โดนปฏิเสธ
               </div>
               <button
                 onClick={() => { commitKeys(); setShowSettings(false); }}
