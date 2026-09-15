@@ -6145,11 +6145,19 @@
       };
 
       const exportBackup = () => {
+        // จุดบอดเดิม: Backup เก็บแค่ portfolios/watchlist/keys ทำให้ "ประวัติการทำรายการซื้อขาย"
+        // (ใช้วาดกราฟการเติบโตของพอร์ตย้อนหลังใน PortfolioGrowthChart), เป้าหมายมูลค่าต่อพอร์ต,
+        // และยอดเงินสดที่ตั้งไว้ หายไปทั้งหมดทุกครั้งที่ผู้ใช้ Import Backup ไปเครื่อง/เบราว์เซอร์ใหม่
+        // (แอปจริงเก็บ 3 คีย์นี้ใน localStorage แยกต่างหาก แต่ exportBackup ไม่เคยอ่านมันเลย) —
+        // เพิ่ม 3 คีย์นี้เข้า backup ให้ครบตามที่แอปเก็บจริง
         const data = {
           portfolios: JSON.parse(localStorage.getItem("us-dash-portfolios-v3") || "[]"),
           watchlist: JSON.parse(localStorage.getItem("us-dash-watchlist") || "[]"),
           keys: JSON.parse(localStorage.getItem("us-dash-keys") || "{}"),
-          version: "3.0.0",
+          txLedger: JSON.parse(localStorage.getItem("us-dash-tx-ledger-v1") || "[]"),
+          portfolioGoals: JSON.parse(localStorage.getItem("us-dash-portfolio-goals-v1") || "{}"),
+          cash: JSON.parse(localStorage.getItem("us-dash-cash-v1") || "{\"amount\":0,\"included\":false}"),
+          version: "3.1.0",
           exportDate: new Date().toISOString()
         };
         const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
@@ -6172,6 +6180,18 @@
             if (parsed.watchlist) {
               saveStore("us-dash-watchlist", parsed.watchlist);
               setSymbols(parsed.watchlist);
+            }
+            // คืนค่าประวัติการทำรายการ/เป้าหมายพอร์ต/เงินสด — คีย์เหล่านี้ถูกอ่านใหม่จาก localStorage
+            // ตอน PortfolioView/PortfolioGrowthChart mount ใหม่หลัง reload ด้านล่าง จึงไม่ต้องมี
+            // setState ที่นี่ (state ของมันอยู่ใน PortfolioView ซึ่งเป็นคนละคอมโพเนนต์กับ App)
+            if (Array.isArray(parsed.txLedger)) {
+              saveStore("us-dash-tx-ledger-v1", parsed.txLedger);
+            }
+            if (parsed.portfolioGoals) {
+              saveStore("us-dash-portfolio-goals-v1", parsed.portfolioGoals);
+            }
+            if (parsed.cash) {
+              saveStore("us-dash-cash-v1", parsed.cash);
             }
             if (parsed.keys) {
               saveStore("us-dash-keys", parsed.keys);
